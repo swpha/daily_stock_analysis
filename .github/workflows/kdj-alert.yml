@@ -1,0 +1,68 @@
+name: KDJ 指标预警
+
+on:
+  # 每个交易日检查两次：北京时间 14:45 盘中预蓄 + 18:35 收盘后确认
+  # （周K含本周进行中数据，J 值每天都会变化，收盘后检查为当日最终口径）
+  schedule:
+    - cron: '45 6 * * 1-5'    # 北京时间 14:45
+    - cron: '35 10 * * 1-5'   # 北京时间 18:35
+
+  workflow_dispatch:
+    inputs:
+      force_notify:
+        description: '强制发送测试通知（跳过去重与数据时效检查）'
+        required: false
+        default: false
+        type: boolean
+
+# 同一时间只跑一个检查；状态文件提交回仓库做去重
+concurrency:
+  group: kdj-alert
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装依赖
+        run: |
+          pip install --upgrade pip
+          pip install akshare
+
+      - name: 执行 KDJ 预警检查
+        env:
+          TZ: Asia/Shanghai
+          KDJ_ALERT_CONFIG: ${{ vars.KDJ_ALERT_CONFIG || '159659:10' }}
+          KDJ_ALERT_MIN_INTERVAL_DAYS: ${{ vars.KDJ_ALERT_MIN_INTERVAL_DAYS || '3' }}
+          KDJ_ALERT_FORCE: ${{ github.event.inputs.force_notify == 'true' && 'true' || 'false' }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ secrets.EMAIL_RECEIVERS }}
+          EMAIL_SMTP_HOST: ${{ vars.EMAIL_SMTP_HOST || secrets.EMAIL_SMTP_HOST }}
+        run: python scripts/kdj_alert.py
+
+      - name: 提交预警状态（去重依据）
+        run: |
+          if [ -n "$(git status --porcelain -- .github/state)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/state
+            git commit -m "chore(kdj-alert): 更新预警状态 [skip ci]"
+            git push
+            echo "✅ 状态已提交"
+          else
+            echo "状态未变化，跳过提交"
+          fi

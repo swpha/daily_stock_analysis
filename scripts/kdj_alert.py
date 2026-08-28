@@ -1,0 +1,307 @@
+# -*- coding: utf-8 -*-
+"""KDJ 指标预警（GitHub Actions 定时任务，独立于主分析流程）。
+
+监控 KDJ_ALERT_CONFIG 配置的标的，周K KDJ(9,3,3) 的 J 值低于阈值时通过邮件
+发送买入信号。指标口径与 scripts/indicators.py 一致：通达信 SMA[N,1] 平滑，
+不复权，周K含本周进行中的实时数据。
+
+配置（环境变量）:
+    KDJ_ALERT_CONFIG             监控列表，code:threshold 逗号分隔，如 "159659:10,600519:8"
+    KDJ_ALERT_MIN_INTERVAL_DAYS  同一标的"持续低位"重复提醒的最小间隔天数（默认 3）
+    KDJ_ALERT_FORCE              true 时跳过去重与数据时效检查，强制发送（用于测试）
+    EMAIL_SENDER / EMAIL_PASSWORD / EMAIL_RECEIVERS / EMAIL_SMTP_HOST
+
+通知去重:
+    首次跌破阈值 → 立即通知；之后仍在阈值下方 → 每 MIN_INTERVAL_DAYS 天提醒一次。
+    状态记录在 .github/state/kdj_alert_state.json，由工作流提交回仓库。
+
+数据源:
+    东财周K接口（akshare，免 token）> 新浪日线接口（聚合为周K，兜底）。
+    ETF 用 fund_etf_* 接口，个股用 stock_zh_a_* 接口，按代码前缀自动路由。
+"""
+from __future__ import annotations
+
+import json
+import os
+import smtplib
+import sys
+import time
+from datetime import date, datetime, timedelta, timezone
+from email.header import Header
+from email.mime.text import MIMEText
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+STATE_PATH = PROJECT_ROOT / ".github" / "state" / "kdj_alert_state.json"
+TZ_BJS = ZoneInfo("Asia/Shanghai")
+
+SMTP_HOSTS = {
+    "qq.com": "smtp.qq.com",
+    "foxmail.com": "smtp.qq.com",
+    "163.com": "smtp.163.com",
+    "126.com": "smtp.126.com",
+    "sina.com": "smtp.sina.com",
+    "gmail.com": "smtp.gmail.com",
+    "outlook.com": "smtp.office365.com",
+    "hotmail.com": "smtp.office365.com",
+}
+
+
+def log(msg: str) -> None:
+    print(f"{datetime.now(TZ_BJS).strftime('%Y-%m-%d %H:%M:%S')} | {msg}", flush=True)
+
+
+def parse_config(raw: str) -> list[tuple[str, float]]:
+    """解析 "159659:10,600519:8" 为 [(code, threshold), ...]。"""
+    items = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        code, _, thr = part.partition(":")
+        code = code.strip()
+        if not (code.isdigit() and len(code) == 6):
+            raise SystemExit(f"KDJ_ALERT_CONFIG 中的代码不合法: {part!r}")
+        items.append((code, float(thr.strip() or 10)))
+    if not items:
+        raise SystemExit("KDJ_ALERT_CONFIG 为空，未配置任何监控标的")
+    return items
+
+
+def is_etf(code: str) -> bool:
+    return code[0] == "5" or code[:2] in ("15", "16")
+
+
+def sina_symbol(code: str) -> str:
+    return ("sh" if code[0] in "569" else "sz") + code
+
+
+def aggregate_weekly(daily: list[dict]) -> list[dict]:
+    """日线聚合成自然周K（本周为进行中的实时周K）。"""
+    buckets: dict[str, dict] = {}
+    for row in daily:
+        d = datetime.strptime(row["date"], "%Y-%m-%d")
+        key = f"{d.isocalendar().year}-W{d.isocalendar().week:02d}"
+        if key not in buckets:
+            buckets[key] = dict(row)
+            continue
+        b = buckets[key]
+        b["high"] = max(b["high"], row["high"])
+        b["low"] = min(b["low"], row["low"])
+        b["close"] = row["close"]
+        b["date"] = row["date"]
+    return sorted(buckets.values(), key=lambda r: r["date"])
+
+
+def fetch_weekly(code: str) -> tuple[list[dict], str]:
+    """返回 (周K列表, 数据源名)。ETF 与个股分别走东财/新浪两级数据源。"""
+    import akshare as ak
+
+    if is_etf(code):
+        try:
+            df = ak.fund_etf_hist_em(symbol=code, period="weekly", adjust="")
+            df = df.rename(columns={"日期": "date", "开盘": "open", "收盘": "close",
+                                    "最高": "high", "最低": "low"})
+            rows = df[["date", "open", "high", "low", "close"]].to_dict("records")
+            return rows, "东财周K"
+        except Exception as exc:
+            log(f"  东财周K失败({code}): {exc}，降级新浪日线聚合")
+        df = ak.fund_etf_hist_sina(symbol=sina_symbol(code))
+    else:
+        try:
+            df = ak.stock_zh_a_hist(symbol=code, period="weekly", adjust="")
+            df = df.rename(columns={"日期": "date", "开盘": "open", "收盘": "close",
+                                    "最高": "high", "最低": "low"})
+            rows = df[["date", "open", "high", "low", "close"]].to_dict("records")
+            return rows, "东财周K"
+        except Exception as exc:
+            log(f"  东财周K失败({code}): {exc}，降级新浪日线聚合")
+        df = ak.stock_zh_a_daily(symbol=sina_symbol(code), adjust="")
+
+    daily = df[["date", "open", "high", "low", "close"]].to_dict("records")
+    for r in daily:
+        r["open"], r["high"] = float(r["open"]), float(r["high"])
+        r["low"], r["close"] = float(r["low"]), float(r["close"])
+        r["date"] = str(r["date"])[:10]
+    if len(daily) > 3650:  # 预热窗口 10 年足够 KDJ 收敛
+        daily = daily[-3650:]
+    return aggregate_weekly(daily), "新浪日线聚合"
+
+
+def add_kdj(rows: list[dict]) -> list[dict]:
+    """KDJ(9,3,3)，SMA[N,1] 平滑（等价 ewm(alpha=1/3)），与通达信一致。"""
+    lows = [r["low"] for r in rows]
+    highs = [r["high"] for r in rows]
+    k = d = 50.0
+    for i, r in enumerate(rows):
+        llv = min(lows[max(0, i - 8):i + 1])
+        hhv = max(highs[max(0, i - 8):i + 1])
+        rsv = 50.0 if hhv == llv else (r["close"] - llv) / (hhv - llv) * 100
+        k = (2 * k + rsv) / 3
+        d = (2 * d + k) / 3
+        r["K"], r["D"], r["J"] = k, d, 3 * k - 2 * d
+    return rows
+
+
+def lookup_names(codes: list[str]) -> dict[str, str]:
+    """尽力查询标的名称（失败不影响预警）。"""
+    import akshare as ak
+
+    names: dict[str, str] = {}
+    etf_codes = [c for c in codes if is_etf(c)]
+    stock_codes = [c for c in codes if not is_etf(c)]
+    for codes_part, fetcher, key in (
+        (etf_codes, ak.fund_etf_spot_em, "代码"),
+        (stock_codes, ak.stock_zh_a_spot_em, "代码"),
+    ):
+        if not codes_part:
+            continue
+        try:
+            df = fetcher()
+            for c in codes_part:
+                hit = df[df[key] == c]
+                if len(hit):
+                    names[c] = str(hit["名称"].iloc[0])
+        except Exception as exc:
+            log(f"  名称查询失败: {exc}")
+    return names
+
+
+def load_state() -> dict:
+    try:
+        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"notified": {}}
+
+
+def send_email(subject: str, body: str) -> None:
+    sender = os.environ["EMAIL_SENDER"].strip()
+    password = os.environ["EMAIL_PASSWORD"].strip()
+    receivers = [r.strip() for r in os.environ.get("EMAIL_RECEIVERS", "").split(",") if r.strip()] or [sender]
+    host = os.environ.get("EMAIL_SMTP_HOST", "").strip() or SMTP_HOSTS.get(sender.split("@")[-1].lower())
+    if not host:
+        raise RuntimeError(f"无法识别 {sender} 的 SMTP 服务器，请设置 EMAIL_SMTP_HOST")
+    port = 587 if host == "smtp.office365.com" else 465
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = Header(subject, "utf-8")
+    msg["From"] = sender
+    msg["To"] = ", ".join(receivers)
+
+    if port == 587:
+        with smtplib.SMTP(host, port, timeout=30) as s:
+            s.starttls()
+            s.login(sender, password)
+            s.sendmail(sender, receivers, msg.as_string())
+    else:
+        with smtplib.SMTP_SSL(host, port, timeout=30) as s:
+            s.login(sender, password)
+            s.sendmail(sender, receivers, msg.as_string())
+    log(f"邮件已发送: {subject} -> {receivers}")
+
+
+def main() -> int:
+    config = parse_config(os.environ.get("KDJ_ALERT_CONFIG", "159659:10"))
+    min_interval = int(os.environ.get("KDJ_ALERT_MIN_INTERVAL_DAYS", "3"))
+    force = os.environ.get("KDJ_ALERT_FORCE", "").strip().lower() in ("1", "true", "yes")
+    today = datetime.now(TZ_BJS).date()
+    state = load_state()
+    notified: dict = state.setdefault("notified", {})
+
+    log(f"监控列表: {config} | 间隔: {min_interval}天 | 强制: {force}")
+    names = lookup_names([c for c, _ in config])
+
+    signals, failures = [], []
+    for code, threshold in config:
+        label = f"{names.get(code, '?')}({code})"
+        try:
+            for attempt in (1, 2):
+                try:
+                    rows, source = fetch_weekly(code)
+                    break
+                except Exception as exc:
+                    if attempt == 2:
+                        raise
+                    log(f"  {label} 取数失败，重试: {exc}")
+                    time.sleep(3)
+            if len(rows) < 10:
+                raise RuntimeError(f"周K数据不足({len(rows)}条)，无法计算 KDJ")
+            add_kdj(rows)
+
+            cur, prev = rows[-1], rows[-2]
+            cur_j, prev_j = cur["J"], prev["J"]
+            bar_age = (today - datetime.strptime(str(cur["date"])[:10], "%Y-%m-%d").date()).days
+            log(f"  {label} [{source}] 最新周K {cur['date']} 收盘={cur['close']} "
+                f"K={cur['K']:.2f} D={cur['D']:.2f} J={cur_j:.2f} (阈值 {threshold}, 上一周J={prev_j:.2f})")
+
+            if not force and bar_age > 5:
+                log(f"  {label} 数据停滞 {bar_age} 天（假期/停牌），跳过")
+                continue
+            if cur_j >= threshold:
+                log(f"  {label} J={cur_j:.2f} 未低于阈值 {threshold}，无信号")
+                continue
+
+            fresh = prev_j >= threshold
+            last = notified.get(code, {}).get("last_notified", "")
+            days_since = (today - date.fromisoformat(last)).days if last else 9999
+            if not force and not fresh and days_since < min_interval:
+                log(f"  {label} 持续低位，距上次通知仅 {days_since} 天（< {min_interval}），跳过重复提醒")
+                continue
+
+            kind = "首次跌破" if fresh else "持续低位"
+            history = "\n".join(
+                f"    {r['date']}  收盘 {r['close']:>8.3f}  K {r['K']:>6.2f}  D {r['D']:>6.2f}  J {r['J']:>7.2f}"
+                for r in rows[-6:])
+            signals.append({
+                "code": code, "name": names.get(code, code), "threshold": threshold,
+                "kind": kind, "bar_date": str(cur["date"])[:10], "close": cur["close"],
+                "k": cur["K"], "d": cur["D"], "j": cur_j, "prev_j": prev_j, "history": history,
+            })
+            notified[code] = {"last_notified": today.isoformat(), "last_j": round(cur_j, 2)}
+        except Exception as exc:
+            log(f"  {label} 检查失败: {exc}")
+            failures.append(f"{code}: {exc}")
+
+    if failures and not signals:
+        log(f"所有标的检查失败:\n  " + "\n  ".join(failures))
+        return 1
+
+    if signals:
+        prefix = "【测试】" if force else ""
+        if len(signals) == 1:
+            s = signals[0]
+            subject = (f"{prefix}【买入信号】{s['name']}({s['code']}) 周K KDJ "
+                       f"J={s['j']:.2f} < {s['threshold']:g}（{s['kind']}）")
+        else:
+            summary = "、".join(f"{s['code']} J={s['j']:.1f}" for s in signals)
+            subject = f"{prefix}【买入信号】{len(signals)} 只标触发 KDJ 超卖: {summary}"
+        body = "\n".join(
+            f"买入信号（周K KDJ 超卖，仅供参考，不构成投资建议）\n"
+            f"{'=' * 52}\n"
+            f"标的: {s['name']} ({s['code']})\n"
+            f"信号: 周K J={s['j']:.2f} < 阈值 {s['threshold']:g}（{s['kind']}，上周J={s['prev_j']:.2f}）\n"
+            f"最新周K: {s['bar_date']}（含本周进行中数据，J 值随行情实时变化）\n"
+            f"周K收盘: {s['close']:.3f}   K={s['k']:.2f}  D={s['d']:.2f}\n"
+            f"\n最近 6 周周K KDJ:\n{s['history']}\n"
+            for s in signals)
+        body += ("\n" + "=" * 52 +
+                 f"\n检查时间: {datetime.now(TZ_BJS).strftime('%Y-%m-%d %H:%M')}（北京时间）\n"
+                 f"监控配置: KDJ_ALERT_CONFIG = {os.environ.get('KDJ_ALERT_CONFIG', '')}\n"
+                 f"由 GitHub Actions 自动发送，修改阈值/标的请到仓库 Settings -> Variables。")
+        try:
+            send_email(subject, body)
+        except Exception as exc:
+            log(f"邮件发送失败: {exc}")
+            return 1
+    else:
+        log("无触发信号，不发送通知")
+
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    log(f"状态已写入 {STATE_PATH.relative_to(PROJECT_ROOT)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
