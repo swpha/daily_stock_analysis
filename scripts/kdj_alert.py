@@ -212,7 +212,7 @@ def main() -> int:
     log(f"监控列表: {config} | 间隔: {min_interval}天 | 强制: {force}")
     names = lookup_names([c for c, _ in config])
 
-    signals, failures = [], []
+    signals, statuses, failures = [], [], []
     for code, threshold in config:
         label = f"{names.get(code, '?')}({code})"
         try:
@@ -250,6 +250,8 @@ def main() -> int:
                 continue
 
             kind = "首次跌破" if fresh else "持续低位"
+            statuses.append({"code": code, "name": names.get(code, code), "threshold": threshold,
+                             "j": cur_j, "bar_date": str(cur["date"])[:10]})
             history = "\n".join(
                 f"    {r['date']}  收盘 {r['close']:>8.3f}  K {r['K']:>6.2f}  D {r['D']:>6.2f}  J {r['J']:>7.2f}"
                 for r in rows[-6:])
@@ -289,6 +291,21 @@ def main() -> int:
                  f"\n检查时间: {datetime.now(TZ_BJS).strftime('%Y-%m-%d %H:%M')}（北京时间）\n"
                  f"监控配置: KDJ_ALERT_CONFIG = {os.environ.get('KDJ_ALERT_CONFIG', '')}\n"
                  f"由 GitHub Actions 自动发送，修改阈值/标的请到仓库 Settings -> Variables。")
+        try:
+            send_email(subject, body)
+        except Exception as exc:
+            log(f"邮件发送失败: {exc}")
+            return 1
+    elif force and statuses:
+        # 强制模式：即使无信号也发送当前指标状态，用于验证整条通知链路
+        summary = "、".join(f"{s['name']}({s['code']}) J={s['j']:.2f}" for s in statuses)
+        subject = f"【测试】KDJ 预警链路正常，当前无信号：{summary}"
+        body = "\n".join(
+            f"{s['name']} ({s['code']})   最新周K {s['bar_date']}   "
+            f"J={s['j']:.2f}（阈值 {s['threshold']:g}，未触发）\n"
+            for s in statuses)
+        body += ("\n这是强制测试邮件，说明数据获取与邮件通道均正常。\n"
+                 f"检查时间: {datetime.now(TZ_BJS).strftime('%Y-%m-%d %H:%M')}（北京时间）")
         try:
             send_email(subject, body)
         except Exception as exc:
