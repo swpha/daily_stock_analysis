@@ -234,6 +234,8 @@ def main() -> int:
             bar_age = (today - datetime.strptime(str(cur["date"])[:10], "%Y-%m-%d").date()).days
             log(f"  {label} [{source}] 最新周K {cur['date']} 收盘={cur['close']} "
                 f"K={cur['K']:.2f} D={cur['D']:.2f} J={cur_j:.2f} (阈值 {threshold}, 上一周J={prev_j:.2f})")
+            statuses.append({"code": code, "name": names.get(code, code), "threshold": threshold,
+                             "j": cur_j, "bar_date": str(cur["date"])[:10]})
 
             if not force and bar_age > 5:
                 log(f"  {label} 数据停滞 {bar_age} 天（假期/停牌），跳过")
@@ -250,8 +252,6 @@ def main() -> int:
                 continue
 
             kind = "首次跌破" if fresh else "持续低位"
-            statuses.append({"code": code, "name": names.get(code, code), "threshold": threshold,
-                             "j": cur_j, "bar_date": str(cur["date"])[:10]})
             history = "\n".join(
                 f"    {r['date']}  收盘 {r['close']:>8.3f}  K {r['K']:>6.2f}  D {r['D']:>6.2f}  J {r['J']:>7.2f}"
                 for r in rows[-6:])
