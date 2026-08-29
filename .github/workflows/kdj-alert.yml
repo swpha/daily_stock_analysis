@@ -44,7 +44,8 @@ jobs:
       - name: 执行 KDJ 预警检查
         env:
           TZ: Asia/Shanghai
-          KDJ_ALERT_CONFIG: ${{ vars.KDJ_ALERT_CONFIG || '159659:10' }}
+          # 格式 code:threshold[:freqs]，freqs: d=日K w=周K，缺省 w；如 "159659:10:dw,600519:8"
+          KDJ_ALERT_CONFIG: ${{ vars.KDJ_ALERT_CONFIG || '159659:10:dw' }}
           KDJ_ALERT_MIN_INTERVAL_DAYS: ${{ vars.KDJ_ALERT_MIN_INTERVAL_DAYS || '2' }}
           KDJ_ALERT_FORCE: ${{ github.event.inputs.force_notify == 'true' && 'true' || 'false' }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
