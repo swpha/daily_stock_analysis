@@ -1,10 +1,9 @@
 name: KDJ 指标预警
 
 on:
-  # 每个交易日检查两次：北京时间 14:45 盘中预蓄 + 18:35 收盘后确认
-  # （周K含本周进行中数据，J 值每天都会变化，收盘后检查为当日最终口径）
+  # 每个交易日收盘后检查一次（北京时间 18:35），周K含本周进行中数据，
+  # 当日收盘后为最终口径
   schedule:
-    - cron: '45 6 * * 1-5'    # 北京时间 14:45
     - cron: '35 10 * * 1-5'   # 北京时间 18:35
 
   workflow_dispatch:
@@ -46,7 +45,7 @@ jobs:
         env:
           TZ: Asia/Shanghai
           KDJ_ALERT_CONFIG: ${{ vars.KDJ_ALERT_CONFIG || '159659:10' }}
-          KDJ_ALERT_MIN_INTERVAL_DAYS: ${{ vars.KDJ_ALERT_MIN_INTERVAL_DAYS || '3' }}
+          KDJ_ALERT_MIN_INTERVAL_DAYS: ${{ vars.KDJ_ALERT_MIN_INTERVAL_DAYS || '2' }}
           KDJ_ALERT_FORCE: ${{ github.event.inputs.force_notify == 'true' && 'true' || 'false' }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}

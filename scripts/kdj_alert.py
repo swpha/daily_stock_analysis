@@ -7,7 +7,7 @@
 
 配置（环境变量）:
     KDJ_ALERT_CONFIG             监控列表，code:threshold 逗号分隔，如 "159659:10,600519:8"
-    KDJ_ALERT_MIN_INTERVAL_DAYS  同一标的"持续低位"重复提醒的最小间隔天数（默认 3）
+    KDJ_ALERT_MIN_INTERVAL_DAYS  同一标的"持续低位"重复提醒的最小间隔天数（默认 2）
     KDJ_ALERT_FORCE              true 时跳过去重与数据时效检查，强制发送（用于测试）
     EMAIL_SENDER / EMAIL_PASSWORD / EMAIL_RECEIVERS / EMAIL_SMTP_HOST
 
@@ -203,7 +203,7 @@ def send_email(subject: str, body: str) -> None:
 
 def main() -> int:
     config = parse_config(os.environ.get("KDJ_ALERT_CONFIG", "159659:10"))
-    min_interval = int(os.environ.get("KDJ_ALERT_MIN_INTERVAL_DAYS", "3"))
+    min_interval = int(os.environ.get("KDJ_ALERT_MIN_INTERVAL_DAYS", "2"))
     force = os.environ.get("KDJ_ALERT_FORCE", "").strip().lower() in ("1", "true", "yes")
     today = datetime.now(TZ_BJS).date()
     state = load_state()
