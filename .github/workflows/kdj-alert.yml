@@ -52,6 +52,10 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECEIVERS: ${{ secrets.EMAIL_RECEIVERS }}
           EMAIL_SMTP_HOST: ${{ vars.EMAIL_SMTP_HOST || secrets.EMAIL_SMTP_HOST }}
+          # 微信渠道（配置了就会推送）：PushPlus / Server酱3 / 企业微信群机器人
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          SERVERCHAN3_SENDKEY: ${{ secrets.SERVERCHAN3_SENDKEY }}
+          WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
         run: python scripts/kdj_alert.py
 
       - name: 提交预警状态（去重依据）

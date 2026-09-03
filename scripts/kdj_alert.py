@@ -12,6 +12,10 @@
     KDJ_ALERT_MIN_INTERVAL_DAYS  同一标的"持续低位"重复提醒的最小间隔天数（默认 2）
     KDJ_ALERT_FORCE              true 时跳过去重与数据时效检查，强制发送（用于测试）
     EMAIL_SENDER / EMAIL_PASSWORD / EMAIL_RECEIVERS / EMAIL_SMTP_HOST
+    微信渠道（配置了就会推送，可同时配多个，全部推送）:
+    PUSHPLUS_TOKEN         PushPlus token（https://www.pushplus.plus 微信扫码获取）
+    SERVERCHAN3_SENDKEY    Server酱3 SendKey（https://sct.ftqq.com 微信扫码获取）
+    WECHAT_WEBHOOK_URL     企业微信群机器人 Webhook
 
 通知去重:
     首次跌破阈值 → 立即通知；之后仍在阈值下方 → 每 MIN_INTERVAL_DAYS 天提醒一次。
@@ -28,6 +32,8 @@ import os
 import smtplib
 import sys
 import time
+import urllib.parse
+import urllib.request
 from datetime import date, datetime, timedelta
 from email.header import Header
 from email.mime.text import MIMEText
@@ -209,6 +215,84 @@ def send_email(subject: str, body: str) -> None:
     log(f"邮件已发送: {subject} -> {receivers}")
 
 
+def send_wechat(subject: str, md_content: str) -> list[str]:
+    """向已配置的微信渠道推送（PushPlus / Server酱3 / 企业微信群机器人）。
+
+    返回实际发送成功的渠道名列表；未配置任何渠道时返回空列表。
+    """
+    ok: list[str] = []
+
+    pushplus = os.environ.get("PUSHPLUS_TOKEN", "").strip()
+    if pushplus:
+        data = json.dumps({"token": pushplus, "title": subject,
+                           "content": md_content, "template": "markdown"}).encode()
+        req = urllib.request.Request("https://www.pushplus.plus/send", data=data,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            ret = json.loads(resp.read().decode())
+        if str(ret.get("code")) not in ("200", "0"):
+            raise RuntimeError(f"PushPlus 返回错误: {ret.get('msg') or ret.get('code')}")
+        ok.append("PushPlus")
+
+    sendkey = os.environ.get("SERVERCHAN3_SENDKEY", "").strip()
+    if sendkey:
+        data = urllib.parse.urlencode({"title": subject, "desp": md_content}).encode()
+        req = urllib.request.Request(f"https://sctapi.ftqq.com/{sendkey}.send", data=data)
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            ret = json.loads(resp.read().decode())
+        if ret.get("code") != 0:
+            raise RuntimeError(f"Server酱3 返回错误: {ret.get('message')}")
+        ok.append("Server酱3")
+
+    webhook = os.environ.get("WECHAT_WEBHOOK_URL", "").strip()
+    if webhook:
+        data = json.dumps({"msgtype": "markdown",
+                           "markdown": {"content": md_content}}).encode()
+        req = urllib.request.Request(webhook, data=data,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            ret = json.loads(resp.read().decode())
+        if ret.get("errcode") != 0:
+            raise RuntimeError(f"企业微信返回错误: {ret.get('errmsg')}")
+        ok.append("企业微信")
+
+    return ok
+
+
+def wechat_markdown_signal(signals: list[dict], force: bool) -> str:
+    """微信渠道用的紧凑 markdown（兼容企业微信的受限语法：不用表格/代码块）。"""
+    prefix = "【测试】" if force else ""
+    lines = [f"{prefix}**买入信号**（KDJ 超卖，仅供参考，不构成投资建议）"]
+    for s in signals:
+        lines += [
+            "",
+            f"**{s['kind']}｜{s['name']}（{s['code']}）{s['freq']}**",
+            f"J = {s['j']:.2f} < 阈值 {s['threshold']:g}（前一根 {s['prev_j']:.2f}）",
+            f"K线 {s['bar_date']}｜收盘 {s['close']:.3f}｜K {s['k']:.2f}｜D {s['d']:.2f}",
+            f"最近 6 根 {s['freq']} KDJ：",
+            *[f"    {r.strip()}" for r in s["history"].splitlines()],
+        ]
+    lines += [
+        "",
+        f"检查时间: {datetime.now(TZ_BJS).strftime('%Y-%m-%d %H:%M')}（北京时间）",
+    ]
+    return "\n".join(lines)
+
+
+def wechat_markdown_status(statuses: list[dict], force: bool) -> str:
+    """强制测试（无信号）时的当前指标状态 markdown。"""
+    prefix = "【测试】" if force else ""
+    lines = [f"{prefix}**KDJ 预警链路正常，当前无信号**",
+             "", "代码（名称） | 周期 | 最新K线 | J | 阈值"]
+    for s in statuses:
+        lines.append(f"{s['code']}（{s['name']}） | {s['freq']} | {s['bar_date']} | "
+                     f"{s['j']:.2f} | {s['threshold']:g}")
+    lines += ["",
+              "这是强制测试消息，说明数据获取与通知渠道均正常。",
+              f"检查时间: {datetime.now(TZ_BJS).strftime('%Y-%m-%d %H:%M')}（北京时间）"]
+    return "\n".join(lines)
+
+
 def main() -> int:
     config = parse_config(os.environ.get("KDJ_ALERT_CONFIG", "159659:10:dw"))
     min_interval = int(os.environ.get("KDJ_ALERT_MIN_INTERVAL_DAYS", "2"))
@@ -313,8 +397,10 @@ def main() -> int:
                  f"由 GitHub Actions 自动发送，修改阈值/标的/周期请到仓库 Settings -> Variables。")
         try:
             send_email(subject, body)
+            sent_wx = send_wechat(subject, wechat_markdown_signal(signals, force))
+            log(f"微信推送: {'、'.join(sent_wx) if sent_wx else '未配置微信渠道'}")
         except Exception as exc:
-            log(f"邮件发送失败: {exc}")
+            log(f"通知发送失败（未记录去重状态，下个检查点会重试）: {exc}")
             return 1
     elif force and statuses:
         # 强制模式：即使无信号也发送当前指标状态，用于验证整条通知链路
@@ -324,12 +410,14 @@ def main() -> int:
             f"{s['name']} ({s['code']})  {s['freq']}  最新K线 {s['bar_date']}   "
             f"J={s['j']:.2f}（阈值 {s['threshold']:g}，未触发）\n"
             for s in statuses)
-        body += ("\n这是强制测试邮件，说明数据获取与邮件通道均正常。\n"
+        body += ("\n这是强制测试邮件，说明数据获取与通知渠道均正常。\n"
                  f"检查时间: {datetime.now(TZ_BJS).strftime('%Y-%m-%d %H:%M')}（北京时间）")
         try:
             send_email(subject, body)
+            sent_wx = send_wechat(subject, wechat_markdown_status(statuses, force))
+            log(f"微信推送: {'、'.join(sent_wx) if sent_wx else '未配置微信渠道'}")
         except Exception as exc:
-            log(f"邮件发送失败: {exc}")
+            log(f"通知发送失败: {exc}")
             return 1
     else:
         log("无触发信号，不发送通知")
