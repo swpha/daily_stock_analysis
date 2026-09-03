@@ -218,44 +218,60 @@ def send_email(subject: str, body: str) -> None:
 def send_wechat(subject: str, md_content: str) -> list[str]:
     """向已配置的微信渠道推送（PushPlus / Server酱3 / 企业微信群机器人）。
 
-    返回实际发送成功的渠道名列表；未配置任何渠道时返回空列表。
+    各渠道独立尝试：单渠道失败只记日志，不阻断其它渠道；
+    返回实际发送成功的渠道名列表；全部失败时抛错。未配置任何渠道时返回空列表。
     """
     ok: list[str] = []
+    errors: list[str] = []
 
     pushplus = os.environ.get("PUSHPLUS_TOKEN", "").strip()
     if pushplus:
-        data = json.dumps({"token": pushplus, "title": subject,
-                           "content": md_content, "template": "markdown"}).encode()
-        req = urllib.request.Request("https://www.pushplus.plus/send", data=data,
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            ret = json.loads(resp.read().decode())
-        if str(ret.get("code")) not in ("200", "0"):
-            raise RuntimeError(f"PushPlus 返回错误: {ret.get('msg') or ret.get('code')}")
-        ok.append("PushPlus")
+        try:
+            data = json.dumps({"token": pushplus, "title": subject,
+                               "content": md_content, "template": "markdown"}).encode()
+            req = urllib.request.Request("https://www.pushplus.plus/send", data=data,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                ret = json.loads(resp.read().decode())
+            if str(ret.get("code")) not in ("200", "0"):
+                raise RuntimeError(f"PushPlus 返回错误: {ret.get('msg') or ret.get('code')}")
+            ok.append("PushPlus")
+        except Exception as exc:
+            log(f"  PushPlus 推送失败: {exc}")
+            errors.append(str(exc))
 
     sendkey = os.environ.get("SERVERCHAN3_SENDKEY", "").strip()
     if sendkey:
-        data = urllib.parse.urlencode({"title": subject, "desp": md_content}).encode()
-        req = urllib.request.Request(f"https://sctapi.ftqq.com/{sendkey}.send", data=data)
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            ret = json.loads(resp.read().decode())
-        if ret.get("code") != 0:
-            raise RuntimeError(f"Server酱3 返回错误: {ret.get('message')}")
-        ok.append("Server酱3")
+        try:
+            data = urllib.parse.urlencode({"title": subject, "desp": md_content}).encode()
+            req = urllib.request.Request(f"https://sctapi.ftqq.com/{sendkey}.send", data=data)
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                ret = json.loads(resp.read().decode())
+            if ret.get("code") != 0:
+                raise RuntimeError(f"Server酱3 返回错误: {ret.get('message')}")
+            ok.append("Server酱3")
+        except Exception as exc:
+            log(f"  Server酱3 推送失败: {exc}")
+            errors.append(str(exc))
 
     webhook = os.environ.get("WECHAT_WEBHOOK_URL", "").strip()
     if webhook:
-        data = json.dumps({"msgtype": "markdown",
-                           "markdown": {"content": md_content}}).encode()
-        req = urllib.request.Request(webhook, data=data,
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            ret = json.loads(resp.read().decode())
-        if ret.get("errcode") != 0:
-            raise RuntimeError(f"企业微信返回错误: {ret.get('errmsg')}")
-        ok.append("企业微信")
+        try:
+            data = json.dumps({"msgtype": "markdown",
+                               "markdown": {"content": md_content}}).encode()
+            req = urllib.request.Request(webhook, data=data,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                ret = json.loads(resp.read().decode())
+            if ret.get("errcode") != 0:
+                raise RuntimeError(f"企业微信返回错误: {ret.get('errmsg')}")
+            ok.append("企业微信")
+        except Exception as exc:
+            log(f"  企业微信推送失败: {exc}")
+            errors.append(str(exc))
 
+    if not ok and errors:
+        raise RuntimeError("全部微信渠道均失败: " + "; ".join(errors))
     return ok
 
 
