@@ -10,6 +10,13 @@ on:
         description: 'Release tag in semver format, e.g. v3.0.6'
         required: true
         type: string
+  # 供 ghcr-dockerhub.yml（Docker Manual Publish）等薄封装以 workflow_call 复用
+  workflow_call:
+    inputs:
+      release_tag:
+        description: 'Release tag in semver format, e.g. v3.0.6'
+        required: true
+        type: string
 
 concurrency:
   group: docker-publish-${{ github.ref }}

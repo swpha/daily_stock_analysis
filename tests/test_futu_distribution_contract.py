@@ -44,7 +44,13 @@ def test_futu_sdk_is_pinned_and_verified_across_linux_distributions() -> None:
     assert "import futu" in _job_run_text(ci["jobs"]["docker-build"])
     assert "import futu" in _job_run_text(daily["jobs"]["analyze"])
     assert "import futu" in _job_run_text(docker_publish["jobs"]["build-and-push"])
-    assert "import futu" in _job_run_text(manual_publish["jobs"]["build-and-push"])
+
+    # 手动发布 workflow 是 docker-publish 的薄封装（workflow_call 委托），
+    # futu 冒烟检查经委托仍然生效，因此这里锁定委托关系本身。
+    publish_job = manual_publish["jobs"]["publish"]
+    assert (
+        publish_job["uses"] == "./.github/workflows/docker-publish.yml"
+    ), "manual publish must delegate to docker-publish.yml to keep the futu smoke check"
 
 
 def test_futu_sdk_is_collected_and_probed_in_desktop_backends() -> None:

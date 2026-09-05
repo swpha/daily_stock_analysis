@@ -1,0 +1,5 @@
+# KDJ 预警 workflow (kdj-alert.yml) 的最小依赖清单。
+# 单独成文件的原因：
+# 1. setup-python 的 pip 缓存以本文件 hash 作为缓存 key，避免 key 随 requirements.txt 飘移；
+# 2. 该 job 只需要 akshare，无需安装完整 requirements.txt（省 1-2 分钟安装时间）。
+akshare>=1.12.0
