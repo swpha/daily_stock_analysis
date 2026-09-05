@@ -144,7 +144,8 @@ describe('DesktopUpdateIndicator', () => {
     await waitFor(() => expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1));
   });
 
-  it('surfaces download percent in the entry tooltip', async () => {
+  it('surfaces download percent in the update entry panel', async () => {
+    // 治理测试禁止交互元素使用原生 title；下载进度改为面板内可见展示
     desktopGetUpdateState.mockResolvedValue({
       status: 'downloading',
       currentVersion: '3.30.0',
@@ -155,7 +156,9 @@ describe('DesktopUpdateIndicator', () => {
     renderIndicator();
 
     const entry = await screen.findByRole('button', { name: '桌面端更新' });
-    expect(entry).toHaveAttribute('title', expect.stringContaining('42%'));
+    fireEvent.click(entry);
+
+    expect(await screen.findByText(/42%/)).toBeInTheDocument();
     expect(desktopCheckForUpdates).not.toHaveBeenCalled();
   });
 });
