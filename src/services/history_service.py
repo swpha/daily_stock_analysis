@@ -61,6 +61,7 @@ from src.utils.data_processing import (
     extract_realtime_detail_fields,
     normalize_model_used,
     parse_json_field,
+    safe_float,
     signal_attribution_has_content,
     signal_attribution_weight_items,
 )
@@ -284,17 +285,7 @@ class HistoryService:
 
     @staticmethod
     def _safe_float(value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        try:
-            if isinstance(value, str):
-                value = value.strip().replace("%", "")
-                if not value:
-                    return None
-            parsed = float(value)
-            return parsed if parsed == parsed else None
-        except (TypeError, ValueError):
-            return None
+        return safe_float(value, nan_is_none=True)
 
     @staticmethod
     def _first_present(*values: Any) -> Any:

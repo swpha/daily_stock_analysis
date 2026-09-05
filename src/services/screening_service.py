@@ -37,6 +37,7 @@ from src.services.screening.pipeline import screen as run_screening_pipeline
 from src.services.screening.source_guard import parse_source_timeout_seconds
 from src.services.screening.strategy import list_strategies as load_screening_strategies
 from src.storage import DatabaseManager
+from src.utils.data_processing import safe_float
 
 logger = logging.getLogger(__name__)
 
@@ -93,15 +94,7 @@ _SCREENING_LITELLM_COMPLETION_LOCK = threading.Lock()
 
 
 def _safe_float(value: Any) -> Optional[float]:
-    try:
-        if value is None or value == "":
-            return None
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(number):
-        return None
-    return number
+    return safe_float(value, percent=False, finite_only=True)
 
 
 def _utc_now_iso() -> str:

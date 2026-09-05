@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from src.utils.data_processing import safe_float
+
 logger = logging.getLogger(__name__)
 
 _DIVIDEND_KEYWORD_MAP: Dict[str, List[str]] = {
@@ -46,20 +48,7 @@ _DIVIDEND_KEYWORD_MAP: Dict[str, List[str]] = {
 
 def _safe_float(value: Any) -> Optional[float]:
     """Best-effort float conversion."""
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-    s = str(value).strip().replace(",", "").replace("%", "")
-    if not s:
-        return None
-    try:
-        return float(s)
-    except (TypeError, ValueError):
-        return None
+    return safe_float(value, commas=True)
 
 
 def _safe_str(value: Any) -> str:

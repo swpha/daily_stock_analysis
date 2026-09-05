@@ -1368,7 +1368,14 @@ class TestCustomWebhookSender(unittest.TestCase):
 
     @mock.patch("src.notification_sender.custom_webhook_sender.requests.post")
     def test_send_returns_true_when_one_custom_webhook_succeeds(self, mock_post):
-        mock_post.side_effect = [_response(500), _response(200)]
+        # 第一个 URL 持续 5xx（重试耗尽），第二个 URL 一次成功。
+        # 5xx 会按 http_retry 策略重试（自定义 Webhook 补齐重试能力后的契约）。
+        mock_post.side_effect = [
+            _response(500),
+            _response(500),
+            _response(500),
+            _response(200),
+        ]
         cfg = _config(
             custom_webhook_urls=[
                 "https://example.com/fail",
@@ -1380,7 +1387,7 @@ class TestCustomWebhookSender(unittest.TestCase):
         result = sender.send_to_custom("hello")
 
         self.assertTrue(result)
-        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(mock_post.call_count, 4)
 
     @mock.patch("src.notification_sender.custom_webhook_sender.requests.post")
     def test_test_custom_webhooks_returns_ordered_attempts(self, mock_post):

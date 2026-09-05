@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Union
 from enum import Enum
 
+from src.utils.data_processing import safe_float as core_safe_float
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,54 +36,36 @@ logger = logging.getLogger(__name__)
 def safe_float(val: Any, default: Optional[float] = None) -> Optional[float]:
     """
     安全转换为浮点数
-    
+
     处理场景：
     - None / 空字符串 → default
     - pandas NaN / numpy NaN → default
     - 数值字符串 → float
     - 已是数值 → float
-    
+
     Args:
         val: 待转换的值
         default: 转换失败时的默认值
-        
+
     Returns:
         转换后的浮点数，或默认值
     """
-    try:
-        if val is None:
-            return default
-        
-        # 处理字符串
-        if isinstance(val, str):
-            val = val.strip()
-            if val == "" or val == "-" or val == "--":
-                return default
-        
-        # 处理 pandas/numpy NaN
-        # 使用 math.isnan 而不是 pd.isna，避免强制依赖 pandas
-        import math
-        try:
-            if math.isnan(float(val)):
-                return default
-        except (ValueError, TypeError):
-            pass
-        
-        return float(val)
-    except (ValueError, TypeError):
+    # 占位符（含 "--"）在核心实现中不会被判空，这里先行拦截
+    if isinstance(val, str) and val.strip() in ("", "-", "--"):
         return default
+    return core_safe_float(val, default, percent=False, nan_is_none=True)
 
 
 def safe_int(val: Any, default: Optional[int] = None) -> Optional[int]:
     """
     安全转换为整数
-    
+
     先转换为 float，再取整，处理 "123.0" 这类情况
-    
+
     Args:
         val: 待转换的值
         default: 转换失败时的默认值
-        
+
     Returns:
         转换后的整数，或默认值
     """

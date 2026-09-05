@@ -67,6 +67,7 @@ from src.utils.data_processing import (
     signal_attribution_has_content,
     signal_attribution_weight_items,
     normalize_model_used,
+    safe_float,
 )
 from src.notification_sender import (
     AstrbotSender,
@@ -93,22 +94,7 @@ logger = logging.getLogger(__name__)
 
 def _safe_float(value: Any) -> Optional[float]:
     """Best-effort float conversion; handles `"3.2%"` and `"1,234"` shapes."""
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-    text = str(value).strip().replace(",", "")
-    if text.endswith("%"):
-        text = text[:-1].strip()
-    if not text:
-        return None
-    try:
-        return float(text)
-    except (TypeError, ValueError):
-        return None
+    return safe_float(value, commas=True)
 
 
 def _format_strategy_skill_items(items: Any, report_language: str = "zh") -> str:

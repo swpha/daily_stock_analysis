@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import requests
 
 from src.services.screening.models import Pick
+from src.utils.data_processing import safe_int
 
 logger = logging.getLogger(__name__)
 _DEFAULT_ANALYZE_PATH = "/api/v1/analysis/analyze"
@@ -295,12 +296,7 @@ def _extract_risk_flags(trend_result: dict) -> list[str]:
 
 
 def _safe_int(value) -> int | None:
-    try:
-        if value is None or value == "":
-            return None
-        return int(value)
-    except (TypeError, ValueError):
-        return None
+    return safe_int(value)
 
 
 def _safe_str(value) -> str:

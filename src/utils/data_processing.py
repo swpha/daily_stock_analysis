@@ -78,29 +78,62 @@ def _normalize_belong_boards(value: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
-def _safe_float(value: Any) -> Optional[float]:
+def safe_float(
+    value: Any,
+    default: Optional[float] = None,
+    *,
+    percent: bool = True,
+    commas: bool = False,
+    nan_is_none: bool = False,
+    finite_only: bool = False,
+) -> Optional[float]:
+    """
+    Shared best-effort float conversion for loose data (LLM text, provider payloads).
+
+    - None / unparsable -> default
+    - numeric -> float(value)
+    - str -> strip, optionally drop thousands commas and a trailing percent sign
+    - NaN -> default when nan_is_none; NaN/inf -> default when finite_only
+    """
     if value is None:
-        return None
-    try:
-        if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                return None
-            if text.endswith("%"):
-                text = text[:-1].strip()
-            return float(text)
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+        return default
+    if isinstance(value, str):
+        text = value.strip()
+        if commas:
+            text = text.replace(",", "")
+        if percent and text.endswith("%"):
+            text = text[:-1].strip()
+        if not text:
+            return default
+        try:
+            parsed = float(text)
+        except (TypeError, ValueError):
+            return default
+    else:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+    if finite_only:
+        return parsed if math.isfinite(parsed) else default
+    if nan_is_none and math.isnan(parsed):
+        return default
+    return parsed
 
 
-def _safe_int(value: Any) -> Optional[int]:
+def safe_int(
+    value: Any,
+    default: Optional[int] = None,
+    *,
+    via_float: bool = False,
+) -> Optional[int]:
+    """Shared best-effort int conversion; via_float first coerces so "3.7" parses as 3."""
     if value is None:
-        return None
+        return default
     try:
-        return int(value)
+        return int(float(value)) if via_float else int(value)
     except (TypeError, ValueError):
-        return None
+        return default
 
 
 def _normalize_sector_ranking_items(value: Any) -> List[Dict[str, Any]]:
@@ -123,10 +156,10 @@ def _normalize_sector_ranking_items(value: Any) -> List[Dict[str, Any]]:
                 optional_text = str(item.get(optional_field)).strip()
                 if optional_text:
                     ranking_item[optional_field] = optional_text
-        change_pct = _safe_float(item.get("change_pct"))
+        change_pct = safe_float(item.get("change_pct"))
         if change_pct is not None:
             ranking_item["change_pct"] = change_pct
-        rank = _safe_int(item.get("rank"))
+        rank = safe_int(item.get("rank"))
         if rank is not None:
             ranking_item["rank"] = rank
         normalized.append(ranking_item)

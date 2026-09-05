@@ -38,6 +38,7 @@ from .base import (
     is_st_stock,
     normalize_stock_code,
 )
+from src.utils.data_processing import safe_float
 from .realtime_types import RealtimeSource, UnifiedRealtimeQuote, safe_int
 
 
@@ -235,15 +236,7 @@ class TickFlowFetcher(BaseFetcher):
 
     @staticmethod
     def _safe_float(value: Any) -> Optional[float]:
-        if value in (None, "", "-"):
-            return None
-        try:
-            numeric = float(value)
-            if math.isnan(numeric):
-                return None
-            return numeric
-        except (TypeError, ValueError):
-            return None
+        return safe_float(value, percent=False, nan_is_none=True)
 
     @staticmethod
     def _parse_bool(value: Optional[str], default: bool) -> bool:

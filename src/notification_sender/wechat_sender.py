@@ -15,6 +15,7 @@ from typing import Optional
 
 from src.config import Config
 from src.formatters import chunk_content_by_max_bytes, strip_hidden_markdown_metadata
+from src.notification_sender.http_retry import send_with_retry
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 # WeChat Work image msgtype limit ~2MB (base64 payload)
 WECHAT_IMAGE_MAX_BYTES = 2 * 1024 * 1024
+WECHAT_MAX_RETRIES = 3
 
 class WechatSender:
     
@@ -131,27 +133,34 @@ class WechatSender:
             return False
     
     def _send_wechat_message(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
-        """发送企业微信消息"""
+        """发送企业微信消息（网络异常/5xx 自动重试；errcode!=0 属业务错误，不重试）"""
         payload = self._gen_wechat_payload(content)
-        
-        response = requests.post(
-            self._wechat_url,
-            json=payload,
-            timeout=timeout_seconds or 10,
-            verify=self._webhook_verify_ssl
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result.get('errcode') == 0:
-                logger.info("企业微信消息发送成功")
-                return True
-            else:
-                logger.error(f"企业微信返回错误: {result}")
+
+        def _attempt() -> requests.Response:
+            return requests.post(
+                self._wechat_url,
+                json=payload,
+                timeout=timeout_seconds or 10,
+                verify=self._webhook_verify_ssl
+            )
+
+        def _is_success(response: requests.Response) -> bool:
+            if response.status_code != 200:
                 return False
-        else:
-            logger.error(f"企业微信请求失败: {response.status_code}")
-            return False
+            try:
+                return response.json().get('errcode') == 0
+            except (AttributeError, TypeError, ValueError):
+                return False
+
+        return send_with_retry(
+            _attempt,
+            label="企业微信",
+            is_success=_is_success,
+            max_retries=WECHAT_MAX_RETRIES,
+            backoff_base_seconds=1.0,
+            sleep=time.sleep,
+            log=logger,
+        )
         
     def _send_wechat_chunked(self, content: str, max_bytes: int) -> bool:
         """

@@ -26,7 +26,7 @@ from src.schemas.market_structure import (
     dump_market_structure_model,
 )
 from src.services.market_hotspot_service import MarketHotspotService
-from src.utils.data_processing import extract_board_detail_fields
+from src.utils.data_processing import extract_board_detail_fields, safe_float, safe_int
 
 
 logger = logging.getLogger(__name__)
@@ -664,28 +664,11 @@ class MarketStructureService:
 
     @staticmethod
     def _safe_float(value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        try:
-            if isinstance(value, str):
-                text = value.strip()
-                if not text:
-                    return None
-                if text.endswith("%"):
-                    text = text[:-1].strip()
-                return float(text)
-            return float(value)
-        except (TypeError, ValueError):
-            return None
+        return safe_float(value)
 
     @staticmethod
     def _safe_int(value: Any) -> Optional[int]:
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
+        return safe_int(value)
 
     @staticmethod
     def _optional_text(value: Any) -> Optional[str]:

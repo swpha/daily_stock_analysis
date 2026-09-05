@@ -33,6 +33,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from src.utils.data_processing import safe_float
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,15 +53,7 @@ _CASHFLOW_OP_KEYS = (
 
 
 def _safe_float(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    if result != result:  # NaN guard
-        return None
-    return result
+    return safe_float(value, percent=False, nan_is_none=True)
 
 
 def _ratio_to_pct(value: Any) -> Optional[float]:

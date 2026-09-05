@@ -17,6 +17,7 @@ from src.formatters import (
     chunk_content_by_max_words,
     strip_hidden_markdown_metadata,
 )
+from src.notification_sender.http_retry import get_retry_after_seconds, send_with_retry
 
 
 logger = logging.getLogger(__name__)
@@ -212,7 +213,7 @@ class DiscordSender:
         timeout_seconds: Optional[float] = None,
         channel_name: str,
     ) -> bool:
-        """发送单条 Discord 消息，并复用 Telegram 的有限重试思路处理 429/5xx。"""
+        """发送单条 Discord 消息；429/5xx 指数退避重试（http_retry.send_with_retry）。"""
         request_kwargs = {
             'json': payload,
             'timeout': timeout_seconds or 10,
@@ -222,78 +223,16 @@ class DiscordSender:
         if verify is not None:
             request_kwargs['verify'] = verify
 
-        for attempt in range(1, DISCORD_MAX_RETRIES + 1):
-            try:
-                response = requests.post(url, **request_kwargs)
-            except requests.exceptions.RequestException as e:
-                if attempt < DISCORD_MAX_RETRIES:
-                    delay = 2 ** attempt
-                    logger.warning(
-                        "Discord %s 请求异常（%d/%d）：%s，%s 秒后重试",
-                        channel_name,
-                        attempt,
-                        DISCORD_MAX_RETRIES,
-                        e,
-                        delay,
-                    )
-                    time.sleep(delay)
-                    continue
-                logger.error("Discord %s 请求重试后仍失败: %s", channel_name, e)
-                return False
-
-            if response.status_code in success_statuses:
-                logger.info("Discord %s 消息发送成功", channel_name)
-                return True
-
-            if response.status_code == 429 and attempt < DISCORD_MAX_RETRIES:
-                retry_after = self._get_retry_after_seconds(response, attempt)
-                logger.warning(
-                    "Discord %s 触发限流，%s 秒后重试（%d/%d）",
-                    channel_name,
-                    retry_after,
-                    attempt,
-                    DISCORD_MAX_RETRIES,
-                )
-                time.sleep(retry_after)
-                continue
-
-            if response.status_code >= 500 and attempt < DISCORD_MAX_RETRIES:
-                delay = 2 ** attempt
-                logger.warning(
-                    "Discord %s 服务端错误 HTTP %s（%d/%d），%s 秒后重试",
-                    channel_name,
-                    response.status_code,
-                    attempt,
-                    DISCORD_MAX_RETRIES,
-                    delay,
-                )
-                time.sleep(delay)
-                continue
-
-            logger.error(
-                "Discord %s 发送失败: %s %s",
-                channel_name,
-                response.status_code,
-                response.text,
-            )
-            return False
-
-        return False
+        return send_with_retry(
+            lambda: requests.post(url, **request_kwargs),
+            label=f"Discord {channel_name}",
+            is_success=lambda response: response.status_code in success_statuses,
+            max_retries=DISCORD_MAX_RETRIES,
+            retry_after=get_retry_after_seconds,
+            sleep=time.sleep,
+            log=logger,
+        )
 
     @staticmethod
     def _get_retry_after_seconds(response, attempt: int) -> float:
-        try:
-            retry_after = response.json().get('retry_after')
-            if retry_after is not None:
-                return max(0.0, float(retry_after))
-        except (AttributeError, TypeError, ValueError):
-            pass
-
-        try:
-            retry_after = response.headers.get('Retry-After')
-            if retry_after is not None:
-                return max(0.0, float(retry_after))
-        except AttributeError:
-            pass
-
-        return float(2 ** attempt)
+        return get_retry_after_seconds(response, attempt)

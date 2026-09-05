@@ -19,9 +19,12 @@ from src.formatters import (
     slice_at_max_bytes,
     strip_hidden_markdown_metadata,
 )
+from src.notification_sender.http_retry import send_with_retry
 
 
 logger = logging.getLogger(__name__)
+
+CUSTOM_WEBHOOK_MAX_RETRIES = 3
 
 
 class CustomWebhookSender:
@@ -159,12 +162,26 @@ class CustomWebhookSender:
         if self._custom_webhook_bearer_token:
             headers['Authorization'] = f'Bearer {self._custom_webhook_bearer_token}'
         body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-        response = requests.post(url, data=body, headers=headers, timeout=timeout, verify=self._webhook_verify_ssl)
-        if response.status_code == 200:
-            return True
-        logger.error(f"自定义 Webhook 推送失败: HTTP {response.status_code}")
-        logger.debug(f"响应内容: {response.text[:200]}")
-        return False
+
+        def _attempt() -> requests.Response:
+            return requests.post(
+                url,
+                data=body,
+                headers=headers,
+                timeout=timeout,
+                verify=self._webhook_verify_ssl,
+            )
+
+        # 网络异常/5xx 自动重试；4xx（如鉴权失败）属配置性错误，不重试
+        return send_with_retry(
+            _attempt,
+            label="自定义 Webhook",
+            is_success=lambda response: response.status_code == 200,
+            max_retries=CUSTOM_WEBHOOK_MAX_RETRIES,
+            backoff_base_seconds=1.0,
+            sleep=time.sleep,
+            log=logger,
+        )
 
     def test_custom_webhooks(self, content: str, *, timeout_seconds: float = 20.0) -> List[Dict[str, Any]]:
         """Send a test message to each custom webhook and return raw per-URL attempts."""

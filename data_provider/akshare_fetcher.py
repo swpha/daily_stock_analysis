@@ -2418,21 +2418,11 @@ class AkshareFetcher(BaseFetcher):
 
     @staticmethod
     def _safe_float(value: Any) -> Optional[float]:
-        try:
-            if pd.isna(value):
-                return None
-            return float(value)
-        except (TypeError, ValueError):
-            return None
+        return safe_float(value)
 
     @staticmethod
     def _safe_int(value: Any) -> int:
-        try:
-            if pd.isna(value):
-                return 0
-            return int(float(value))
-        except (TypeError, ValueError):
-            return 0
+        return safe_int(value, default=0)
 
     @staticmethod
     def _find_first_column(df: pd.DataFrame, candidates: Tuple[str, ...]) -> Optional[str]:

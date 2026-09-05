@@ -31,7 +31,7 @@ from src.services.run_diagnostics import record_provider_run, record_provider_ru
 from src.services.stock_list_parser import AnalysisTarget, ParseStatus, parse_analysis_target
 from .fundamental_adapter import AkshareFundamentalAdapter
 from .yfinance_fundamental_adapter import YfinanceFundamentalAdapter
-from .realtime_types import CircuitBreaker
+from .realtime_types import CircuitBreaker, safe_float
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -212,15 +212,7 @@ def _is_etf_code(code: str) -> bool:
 
 
 def _coerce_chip_metric(value: Any) -> Optional[float]:
-    try:
-        if value is None:
-            return None
-        numeric = float(value)
-        if np.isnan(numeric):
-            return None
-        return numeric
-    except (TypeError, ValueError):
-        return None
+    return safe_float(value)
 
 
 def _is_meaningful_chip_distribution(chip: Any) -> bool:
