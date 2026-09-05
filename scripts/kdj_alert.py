@@ -180,6 +180,19 @@ def lookup_names(codes: list[str]) -> dict[str, str]:
                     names[c] = str(hit["名称"].iloc[0])
         except Exception as exc:
             log(f"  名称查询失败: {exc}")
+    missing = [c for c in codes if c not in names]
+    if missing:  # 东财名称接口不可达时，用新浪行情接口逐个兜底
+        import requests
+        sess = requests.Session()
+        sess.headers["Referer"] = "https://finance.sina.com.cn"
+        for c in missing:
+            try:
+                txt = sess.get(f"https://hq.sinajs.cn/list={sina_symbol(c)}", timeout=10).text
+                name = txt.split('"')[1].split(",")[0]
+                if name:
+                    names[c] = name
+            except Exception as exc:
+                log(f"  新浪名称查询失败({c}): {exc}")
     return names
 
 
@@ -362,6 +375,9 @@ def main() -> int:
 
                     fresh = prev_j >= threshold
                     last = notified.get(state_key, {}).get("last_notified", "")
+                    if not force and last == today.isoformat():
+                        log(f"  {label} {flabel}今天已通知过，跳过同日重复提醒")
+                        continue
                     days_since = (today - date.fromisoformat(last)).days if last else 9999
                     if not force and not fresh and days_since < min_interval:
                         log(f"  {label} {flabel}持续低位，距上次通知仅 {days_since} 天（< {min_interval}），跳过重复提醒")
