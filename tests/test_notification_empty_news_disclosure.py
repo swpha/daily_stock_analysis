@@ -430,11 +430,23 @@ class PipelineCountSemanticsTestCase(unittest.TestCase):
     """
 
     def _read_pipeline_source(self):
+        """读取 pipeline 编排源码。
+
+        Agent 分支已拆分至 src/core/agent_flow.py，源码断言需同时覆盖
+        编排器与拆分后的实现文件，避免"文件搬家导致断言失效"的假阴性。
+        """
         from pathlib import Path
 
-        return (Path(__file__).resolve().parents[1] / "src" / "core" / "pipeline.py").read_text(
+        root = Path(__file__).resolve().parents[1]
+        pipeline_src = (root / "src" / "core" / "pipeline.py").read_text(
             encoding="utf-8"
         )
+        agent_flow_src = (root / "src" / "core" / "agent_flow.py").read_text(
+            encoding="utf-8"
+        )
+        # 中间插入足够长的分隔，避免跨文件的近邻窗口（±1200 字符）互相污染
+        separator = "\n" * 2000
+        return pipeline_src + separator + agent_flow_src
 
     def test_count_set_to_zero_once_search_is_attempted(self):
         """检索一旦发起就置 0，不能等到拿到结果对象才赋值。"""
@@ -763,8 +775,12 @@ class NewsEvidenceSourcesTestCase(unittest.TestCase):
         """
         from pathlib import Path
 
-        src = (Path(__file__).resolve().parents[1] / "src" / "core" / "pipeline.py").read_text(
-            encoding="utf-8"
+        # Agent 分支已拆分至 src/core/agent_flow.py，源码断言需覆盖两个文件
+        root = Path(__file__).resolve().parents[1]
+        src = (
+            (root / "src" / "core" / "pipeline.py").read_text(encoding="utf-8")
+            + ("\n" * 2000)
+            + (root / "src" / "core" / "agent_flow.py").read_text(encoding="utf-8")
         )
         code_only = "\n".join(
             line for line in src.splitlines() if not line.strip().startswith("#")
