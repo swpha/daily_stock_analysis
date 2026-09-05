@@ -6,6 +6,7 @@ import {
   getDecisionSignalReassessBlockedError,
 } from '../../api/decisionSignals';
 import { historyApi } from '../../api/history';
+import { stocksApi } from '../../api/stocks';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
 import type { StockBarResponse } from '../../types/analysis';
 import type {
@@ -44,6 +45,12 @@ vi.mock('../../api/decisionSignals', () => ({
 vi.mock('../../api/history', () => ({
   historyApi: {
     getStockBarList: vi.fn(),
+  },
+}));
+
+vi.mock('../../api/stocks', () => ({
+  stocksApi: {
+    search: vi.fn(),
   },
 }));
 
@@ -410,6 +417,17 @@ beforeEach(() => {
     loaded: true,
   };
   vi.mocked(historyApi.getStockBarList).mockResolvedValue(stockBarResponse);
+  vi.mocked(stocksApi.search).mockResolvedValue({
+    query: '',
+    total: stockIndexItems.length,
+    items: stockIndexItems.map((item) => ({
+      ...item,
+      matchType: 'popular',
+      matchField: 'none',
+      score: 0,
+      popularity: item.popularity ?? 0,
+    })),
+  });
   vi.mocked(decisionSignalsApi.list).mockResolvedValue(listResponse());
   vi.mocked(decisionSignalsApi.getLatest).mockResolvedValue(listResponse([signal]));
   vi.mocked(decisionSignalsApi.getOutcomeStats).mockResolvedValue(outcomeStats);
@@ -1173,6 +1191,7 @@ describe('DecisionSignalsPage', () => {
       loaded: false,
     };
     vi.mocked(historyApi.getStockBarList).mockRejectedValueOnce(new Error('history down'));
+    vi.mocked(stocksApi.search).mockRejectedValueOnce(new Error('popular search down'));
 
     renderPage();
 

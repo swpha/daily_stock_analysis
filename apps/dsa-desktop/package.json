@@ -9,11 +9,11 @@
     "test": "node --test tests/*.test.js"
   },
   "dependencies": {
-    "electron-updater": "^6.8.3"
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
-    "electron": "^31.4.0",
-    "electron-builder": "^24.13.3"
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "com.daily-stock-analysis.desktop",
@@ -25,6 +25,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "lib/**/*",
       "renderer/**/*"
     ],
     "extraResources": [
@@ -59,8 +60,5 @@
       "hardenedRuntime": false,
       "target": "dmg"
     }
-  },
-  "overrides": {
-    "builder-util-runtime": "9.7.0"
   }
 }

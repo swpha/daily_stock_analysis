@@ -11,6 +11,7 @@ import type { ErrorInfo, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useStockIndex } from '../../hooks/useStockIndex';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
+import { fetchStockSuggestions } from '../../utils/stockIndexLoader';
 import { SuggestionsList } from './SuggestionsList';
 import { cn } from '../../utils/cn';
 import type { Market } from '../../types/stockIndex';
@@ -111,7 +112,8 @@ function StockAutocompleteInner({
   ariaLabel,
   className,
 }: StockAutocompleteProps) {
-  const { index, loading, fallback } = useStockIndex();
+  // 远程搜索优先：不全量下载索引；远程失败时才降级加载本地全量索引
+  const { index, loading, fallback, load: loadStockIndexFallback } = useStockIndex(true, { lazy: true });
   const {
     // query,
     setQuery,
@@ -127,7 +129,10 @@ function StockAutocompleteInner({
     setIsComposing,
     runtimeFallback,
     error: autocompleteError,
-  } = useAutocomplete(index);
+  } = useAutocomplete(index, {
+    remoteSearch: fetchStockSuggestions,
+    onRemoteSearchFailed: loadStockIndexFallback,
+  });
 
   const inputRef = useRef<HTMLInputElement>(null);
   const prevValueRef = useRef(value);

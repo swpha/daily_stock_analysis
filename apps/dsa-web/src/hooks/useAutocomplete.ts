@@ -16,6 +16,15 @@ export interface UseAutocompleteOptions {
   debounceMs?: number;
   /** Limit on number of results to return */
   limit?: number;
+  /**
+   * 远程搜索函数（后端 /api/v1/stocks/search）。提供后：
+   * - 本地 index 尚未加载（懒加载模式）时走远程搜索；
+   * - 远程失败时回调 onRemoteSearchFailed（由调用方触发全量索引加载），
+   *   索引就绪后自动切回本地搜索。
+   */
+  remoteSearch?: (query: string, limit: number) => Promise<StockSuggestion[]>;
+  /** 远程搜索失败回调（用于触发本地全量索引降级加载） */
+  onRemoteSearchFailed?: () => void;
 }
 
 export interface UseAutocompleteResult {
@@ -66,6 +75,8 @@ export function useAutocomplete(
     minLength = SEARCH_CONFIG.MIN_QUERY_LENGTH,
     debounceMs = SEARCH_CONFIG.DEBOUNCE_MS,
     limit = SEARCH_CONFIG.DEFAULT_LIMIT,
+    remoteSearch,
+    onRemoteSearchFailed,
   } = options;
 
   const [query, setQuery] = useState('');
@@ -78,6 +89,10 @@ export function useAutocomplete(
 
   // Use ref to store debounce timer
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 远程请求序号：只应用最后一次输入的结果，避免竞态乱序
+  const remoteRequestIdRef = useRef(0);
+  const queryRef = useRef('');
+  queryRef.current = query;
 
   // Search function (debounced)
   const search = useCallback((q: string) => {
@@ -89,6 +104,23 @@ export function useAutocomplete(
       setSuggestions([]);
       setIsOpen(false);
       setHighlightedIndex(-1);
+      return;
+    }
+
+    if (remoteSearch && index.length === 0) {
+      const requestId = ++remoteRequestIdRef.current;
+      remoteSearch(q, limit)
+        .then(results => {
+          if (requestId !== remoteRequestIdRef.current) return;
+          setSuggestions(results);
+          setIsOpen(results.length > 0);
+          setHighlightedIndex(-1);
+        })
+        .catch(caught => {
+          if (requestId !== remoteRequestIdRef.current) return;
+          console.error('Remote stock search failed; falling back to local index.', caught);
+          onRemoteSearchFailed?.();
+        });
       return;
     }
 
@@ -106,7 +138,16 @@ export function useAutocomplete(
       setIsOpen(false);
       setHighlightedIndex(-1);
     }
-  }, [index, minLength, limit, runtimeFallback]);
+  }, [index, minLength, limit, runtimeFallback, remoteSearch, onRemoteSearchFailed]);
+
+  // 本地索引在远程失败后加载完成时，用当前输入重新搜索一次
+  useEffect(() => {
+    if (index.length > 0 && queryRef.current.length >= minLength && !runtimeFallback) {
+      search(queryRef.current);
+    }
+    // 仅在索引从空变为可用时触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index.length]);
 
   // Input handling (with debounce)
   const handleInputChange = useCallback((value: string) => {

@@ -4,7 +4,8 @@
  * Responsible for loading and parsing stock index data
  */
 
-import type { StockIndexData, StockIndexItem, StockIndexTuple } from '../types/stockIndex';
+import type { StockIndexData, StockIndexItem, StockIndexTuple, StockSuggestion, Market } from '../types/stockIndex';
+import { stocksApi } from '../api/stocks';
 import { INDEX_FIELD } from './stockIndexFields';
 
 export interface IndexLoadResult {
@@ -25,8 +26,8 @@ export interface IndexLoadResult {
  */
 export async function loadStockIndex(): Promise<IndexLoadResult> {
   try {
-    // Add time parameter to bypass cache (in case the backend doesn't handle ETag/Cache-Control)
-    const response = await fetch(`/stocks.index.json?_t=${Math.floor(Date.now() / 3600000)}`);
+    // 后端对该端点返回 ETag + no-cache：重复加载命中 304，索引刷新（mtime 变化）后自动拉新。
+    const response = await fetch('/stocks.index.json');
 
     if (!response.ok) {
       throw new Error(`Failed to load index: ${response.status} ${response.statusText}`);
@@ -59,6 +60,28 @@ export async function loadStockIndex(): Promise<IndexLoadResult> {
       fallback: true,  // Load failed, fallback to old mode
     };
   }
+}
+
+/**
+ * Remote stock suggestion search (backend /api/v1/stocks/search).
+ *
+ * 后端打分与本地 searchStocks.ts 一致；用于避免一次性下载全量索引。
+ * 服务端不可用时由调用方降级为 loadStockIndex 全量本地搜索。
+ */
+export async function fetchStockSuggestions(
+  query: string,
+  limit: number = 10
+): Promise<StockSuggestion[]> {
+  const response = await stocksApi.search(query, limit);
+  return (response.items ?? []).map(item => ({
+    canonicalCode: item.canonicalCode,
+    displayCode: item.displayCode,
+    nameZh: item.nameZh,
+    market: (item.market || 'CN') as Market,
+    matchType: item.matchType as StockSuggestion['matchType'],
+    matchField: item.matchField as StockSuggestion['matchField'],
+    score: item.score,
+  }));
 }
 
 /**

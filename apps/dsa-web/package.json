@@ -13,10 +13,11 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:smoke": "playwright test",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "generate:api-types": "openapi-typescript openapi.json -o src/types/api-generated.ts",
+    "sync-api-schema": "cd ../.. && python scripts/dump_openapi.py && npm run generate:api-types"
   },
   "dependencies": {
-    "@remixicon/react": "^4.9.0",
     "axios": "^1.18.0",
     "camelcase-keys": "^10.0.2",
     "clsx": "^2.1.1",
@@ -50,6 +51,7 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "jsdom": "^28.1.0",
+    "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4.1.18",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",

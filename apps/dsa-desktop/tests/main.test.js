@@ -85,14 +85,25 @@ function loadMainModule(t, options = {}) {
   };
 
   const mainPath = require.resolve('../main.js');
-  delete require.cache[mainPath];
+  // 拆分后 main 依赖 lib/ 子模块：平台等模块级常量必须随每次加载重新求值，
+  // 因此清除整个 dsa-desktop 模块子树的 require 缓存（与原单文件行为一致）。
+  const desktopRoot = path.resolve(__dirname, '..');
+  for (const key of Object.keys(require.cache)) {
+    if (key === mainPath || key.startsWith(desktopRoot + path.sep)) {
+      delete require.cache[key];
+    }
+  }
 
   t.after(() => {
     Module._load = originalLoad;
     if (options.platform && originalPlatform) {
       Object.defineProperty(process, 'platform', originalPlatform);
     }
-    delete require.cache[mainPath];
+    for (const key of Object.keys(require.cache)) {
+      if (key === mainPath || key.startsWith(desktopRoot + path.sep)) {
+        delete require.cache[key];
+      }
+    }
   });
 
   if (options.platform) {

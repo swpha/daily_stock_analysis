@@ -176,7 +176,7 @@ describe('stockIndexLoader', () => {
       expect(result.data).toEqual([]);
     });
 
-    test('fetch call includes cache-busting parameter', async () => {
+    test('fetches the bare index URL (backend ETag/no-cache handles revalidation)', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => mockIndexData,
@@ -185,7 +185,7 @@ describe('stockIndexLoader', () => {
       await loadStockIndex();
 
       const fetchCallArgs = mockFetch.mock.calls[0][0];
-      expect(fetchCallArgs).toContain('?_t=');
+      expect(fetchCallArgs).toBe('/stocks.index.json');
     });
 
     test('filters out assetType=index rows from the returned data', async () => {
