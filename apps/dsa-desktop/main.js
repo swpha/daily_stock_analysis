@@ -33,6 +33,7 @@ let lastPromptedInstallVersion = '';
 let electronAutoUpdater = undefined;
 let electronAutoUpdaterConfigured = false;
 let electronUpdateCheckInFlight = false;
+let desktopUpdateCheckInFlight = false;
 let desktopBackendOrigin = '';
 
 function resolveWindowBackgroundColor() {
@@ -53,6 +54,7 @@ async function checkForDesktopUpdates({
 }
 
 desktopUpdateState = buildUpdateState();
+let desktopUpdateChecker = checkForDesktopUpdates;
 
 function normalizeBackendHost(value, fallback = '') {
   const normalized = String(value || '').trim();
@@ -1079,6 +1081,11 @@ async function performDesktopUpdateCheck({ manual = false, notify = false } = {}
     return performElectronUpdaterCheck({ manual, notify });
   }
 
+  if (desktopUpdateCheckInFlight) {
+    return desktopUpdateState;
+  }
+
+  desktopUpdateCheckInFlight = true;
   const currentVersion = resolveDesktopVersion();
   setDesktopUpdateState({
     status: UPDATE_STATUS.CHECKING,
@@ -1087,7 +1094,7 @@ async function performDesktopUpdateCheck({ manual = false, notify = false } = {}
   });
 
   try {
-    const nextState = await checkForDesktopUpdates({ currentVersion });
+    const nextState = await desktopUpdateChecker({ currentVersion });
     const resolvedState = setDesktopUpdateState(nextState);
     logLine(
       `[update] status=${resolvedState.status} current=${resolvedState.currentVersion || 'unknown'} latest=${resolvedState.latestVersion || 'unknown'}`
@@ -1115,6 +1122,8 @@ async function performDesktopUpdateCheck({ manual = false, notify = false } = {}
       checkedAt: new Date().toISOString(),
       message: '',
     });
+  } finally {
+    desktopUpdateCheckInFlight = false;
   }
 }
 
@@ -1397,6 +1406,9 @@ module.exports = {
   __setBackendProcessForTest,
   __setMainWindowForTest(mainWindowRef = null) {
     mainWindow = mainWindowRef;
+  },
+  __setDesktopUpdateCheckerForTest(checker) {
+    desktopUpdateChecker = typeof checker === 'function' ? checker : checkForDesktopUpdates;
   },
   waitForBackendExit,
 };

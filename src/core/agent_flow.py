@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional
 
 from data_provider.realtime_types import ChipDistribution
 from src.analyzer import AnalysisResult
+from src.services.stock_list_parser import AnalysisTarget, ParseStatus
 from src.enums import ReportType
 from src.services.daily_market_context import DailyMarketContext
 from src.stock_analyzer import TrendAnalysisResult
@@ -41,6 +42,7 @@ def analyze_with_agent(
     daily_market_context: Optional[DailyMarketContext] = None,
     portfolio_context: Optional[Dict[str, Any]] = None,
     market_structure_context: Optional[Dict[str, Any]] = None,
+    analysis_target: Optional[AnalysisTarget] = None,
 ) -> Optional[AnalysisResult]:
     """
     使用 Agent 模式分析单只股票。
@@ -77,6 +79,11 @@ def analyze_with_agent(
         from src.agent.factory import build_agent_executor
         report_language = normalize_report_language(getattr(pipeline.config, "report_language", "zh"))
 
+        is_index = (
+            analysis_target is not None
+            and analysis_target.asset_type == ParseStatus.INDEX
+        )
+
         requested_skills = (
             pipeline.analysis_skills
             if pipeline.analysis_skills is not None
@@ -84,6 +91,11 @@ def analyze_with_agent(
         )
         # Build executor from shared factory (ToolRegistry and SkillManager prototype are cached)
         executor = build_agent_executor(pipeline.config, requested_skills)
+
+        # 指数目标：从 Agent 工具面剔除与 INDEX_SKIP_MODULES 对应的底层 provider
+        # 工具（筹码/基本面/资金流），确保 Agent 分支同样零调用（Story 1.5 V6）。
+        if is_index:
+            executor = pipeline._filter_agent_tools_for_index(executor)
 
         # Build initial context to avoid redundant tool calls
         initial_context = {
@@ -135,7 +147,7 @@ def analyze_with_agent(
         persisted_intelligence_context = pipeline._load_persisted_intelligence_context(
             code=code,
             stock_name=stock_name,
-            market=get_market_for_stock(normalize_stock_code(code)) or "cn",
+            market=("cn" if is_index else get_market_for_stock(normalize_stock_code(code)) or "cn"),
         )
         if persisted_intelligence_context:
             existing = initial_context.get("news_context")
@@ -147,10 +159,15 @@ def analyze_with_agent(
             logger.info(f"[{code}] Agent mode: local intelligence evidence injected into news_context")
 
         # Issue #1066: ensure deep history is in DB before agent tools run
-        pipeline._ensure_agent_history(code)
+        if analysis_target is None:
+            pipeline._ensure_agent_history(code)
+        else:
+            pipeline._ensure_agent_history(code, analysis_target=analysis_target)
 
-        analysis_context = pipeline._load_agent_analysis_context(code, stock_name)
-        market = get_market_for_stock(normalize_stock_code(code))
+        analysis_context = pipeline._load_agent_analysis_context(
+            code, stock_name, analysis_target=analysis_target
+        )
+        market = "cn" if is_index else get_market_for_stock(normalize_stock_code(code))
         (
             analysis_context_pack_summary,
             analysis_context_pack_overview,
@@ -404,6 +421,13 @@ def analyze_with_agent(
                     )
                 )
 
+        if result:
+            pipeline._append_daily_data_source(
+                result,
+                analysis_context,
+                analysis_target,
+            )
+
         resolved_stock_name = result.name if result and result.name else stock_name
 
         # 保存新闻情报到数据库（Agent 工具结果仅用于 LLM 上下文，未持久化，Fixes #396）
@@ -411,7 +435,7 @@ def analyze_with_agent(
         if pipeline.search_service is not None and pipeline.search_service.is_available:
             try:
                 news_response = pipeline.search_service.search_stock_news(
-                    stock_code=code,
+                    stock_code=("" if is_index else code),
                     stock_name=resolved_stock_name,
                     max_results=5
                 )
@@ -483,6 +507,7 @@ def analyze_with_agent(
                         report_type=report_type.value,
                         context_snapshot=agent_context_snapshot,
                         portfolio_context=portfolio_context,
+                        analysis_target=analysis_target,
                     )
                 latest_diagnostic_snapshot = current_diagnostic_snapshot()
                 if latest_diagnostic_snapshot is not None:
@@ -503,8 +528,9 @@ def analyze_with_agent(
         logger.exception(f"[{code}] Agent 详细错误信息:")
         return None
 
-
-def load_agent_analysis_context(pipeline, code: str, stock_name: str) -> Dict[str, Any]:
+def load_agent_analysis_context(
+    pipeline, code: str, stock_name: str, analysis_target: Optional[AnalysisTarget] = None
+) -> Dict[str, Any]:
     """Load daily-bar context for Agent pack summaries without blocking analysis."""
 
     import src.core.pipeline as _pipeline
@@ -513,7 +539,9 @@ def load_agent_analysis_context(pipeline, code: str, stock_name: str) -> Dict[st
     logger = _pipeline.logger
 
     try:
-        context = pipeline._get_analysis_context_with_market_fallback(code)
+        context = pipeline._get_analysis_context_with_market_fallback(
+            code, analysis_target=analysis_target
+        )
     except Exception as exc:
         logger.warning(
             "[%s] Agent analysis context load failed; daily_bars will be marked missing: %s",
@@ -537,7 +565,6 @@ def load_agent_analysis_context(pipeline, code: str, stock_name: str) -> Dict[st
         "yesterday": {},
     }
 
-
 def agent_result_to_analysis_result(
     pipeline,
     agent_result,
@@ -560,6 +587,7 @@ def agent_result_to_analysis_result(
     localize_operation_advice = _pipeline.localize_operation_advice
     normalize_report_language = _pipeline.normalize_report_language
     populate_decision_action_fields = _pipeline.populate_decision_action_fields
+
 
     report_language = normalize_report_language(getattr(pipeline.config, "report_language", "zh"))
     dash = None
@@ -746,6 +774,7 @@ def refresh_decision_action_for_final_result(
     # discard that stale action before using the same resolver as the
     # downstream DecisionSignal builder.
 
+
     import src.core.pipeline as _pipeline
 
     # 调用时解析：保持对 src.core.pipeline 模块属性的测试 patch 语义
@@ -781,6 +810,7 @@ def agent_dashboard_value(
     # 调用时解析：保持对 src.core.pipeline 模块属性的测试 patch 语义
     StockAnalysisPipeline = _pipeline.StockAnalysisPipeline
 
+
     value = dash.get(key) if isinstance(dash, dict) else None
     if isinstance(nested_dashboard, dict) and StockAnalysisPipeline._is_agent_field_missing(
         value,
@@ -800,6 +830,7 @@ def agent_dashboard_value(
 
 
 def extract_advice_text_from_dict(raw_advice: dict) -> str:
+
 
     import src.core.pipeline as _pipeline
 
@@ -839,6 +870,7 @@ def is_agent_field_missing(
     allow_dict: bool = False,
     expect_text: bool = False,
 ) -> bool:
+
 
     import src.core.pipeline as _pipeline
 
@@ -881,6 +913,7 @@ def trend_label_fallback(
     report_language: str = "zh",
 ) -> str:
 
+
     import src.core.pipeline as _pipeline
 
     # 调用时解析：保持对 src.core.pipeline 模块属性的测试 patch 语义
@@ -899,6 +932,7 @@ def trend_signal_fallback(
     trend_result: Optional[TrendAnalysisResult],
     report_language: str = "zh",
 ) -> str:
+
 
     import src.core.pipeline as _pipeline
 
@@ -1021,6 +1055,7 @@ def stop_loss_fallback_from_trend(
     report_language: str,
 ) -> Any:
 
+
     import src.core.pipeline as _pipeline
 
     # 调用时解析：保持对 src.core.pipeline 模块属性的测试 patch 语义
@@ -1037,6 +1072,7 @@ def apply_trend_fallback(
     trend_result: Optional[TrendAnalysisResult],
     report_language: str,
 ) -> None:
+
 
     import src.core.pipeline as _pipeline
 
@@ -1100,3 +1136,86 @@ def is_placeholder_stock_name(name: str, code: str) -> bool:
     if "Unknown" in normalized:
         return True
     return False
+
+
+def filter_agent_tools_for_index(self, executor: Any) -> Any:
+    """Return an executor whose tool registry excludes index-incompatible tools.
+
+    Maps ``INDEX_SKIP_MODULES`` to the agent tool names that would otherwise
+    invoke the skipped bottom-layer providers (chip distribution, fundamental
+    aggregation, capital flow). The filtered registry carries the source
+    category-timeout map so per-category ceilings survive the subset copy.
+    """
+
+    import src.core.pipeline as _pipeline
+
+    # 调用时解析：保持对 src.core.pipeline 模块属性的测试 patch 语义
+    INDEX_SKIP_MODULES = _pipeline.INDEX_SKIP_MODULES
+
+    tool_modules = {
+        "get_chip_distribution": {"chip_distribution"},
+        "get_stock_info": {
+            "fundamental",
+            "belong_boards",
+            "lhb",
+            "corporate_events",
+        },
+        "get_capital_flow": {"capital_flow"},
+    }
+    index_skip_tool_names = {
+        name
+        for name, modules in tool_modules.items()
+        if INDEX_SKIP_MODULES.intersection(modules)
+    }
+    registry = getattr(executor, "tool_registry", None)
+    if registry is None:
+        return executor
+    from src.agent.tools.registry import ToolRegistry as _TR
+    filtered = _TR(category_timeout_map=registry.category_timeout_map)
+    for name in registry.list_names():
+        if name in index_skip_tool_names:
+            continue
+        tool_def = registry.get(name)
+        if tool_def is not None:
+            filtered.register(tool_def)
+    executor.tool_registry = filtered
+    return executor
+
+
+def append_daily_data_source(result, context, analysis_target):
+    """Append an index's persisted daily provider without inferring sources."""
+    if (
+        analysis_target is None
+        or analysis_target.asset_type != ParseStatus.INDEX
+    ):
+        return
+    if not isinstance(context, dict):
+        return
+    today = context.get("today")
+    if not isinstance(today, dict):
+        return
+    source = today.get("data_source")
+    if not isinstance(source, str):
+        return
+    source = source.strip()
+    if (
+        not source
+        or source.casefold() == "unknown"
+        or source.casefold().startswith("realtime:")
+    ):
+        return
+
+    existing = result.data_sources
+    if existing is None:
+        existing_tokens = []
+    elif isinstance(existing, str):
+        existing_tokens = [
+            item.strip() for item in existing.split(",") if item.strip()
+        ]
+    else:
+        return
+    token = f"daily:{source}"
+    if token in existing_tokens:
+        return
+    result.data_sources = ",".join([*existing_tokens, token])
+

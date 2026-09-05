@@ -8,6 +8,8 @@ import type { StockIndexData, StockIndexItem, StockIndexTuple, StockSuggestion, 
 import { stocksApi } from '../api/stocks';
 import { INDEX_FIELD } from './stockIndexFields';
 
+const STOCK_INDEX_LOAD_TIMEOUT_MS = 10_000;
+
 export interface IndexLoadResult {
   /** Index data */
   data: StockIndexItem[];
@@ -25,9 +27,15 @@ export interface IndexLoadResult {
  * @returns Index load result
  */
 export async function loadStockIndex(): Promise<IndexLoadResult> {
+  const abortController = new AbortController();
+  const timeoutId = globalThis.setTimeout(
+    () => abortController.abort(),
+    STOCK_INDEX_LOAD_TIMEOUT_MS,
+  );
   try {
     // 后端对该端点返回 ETag + no-cache：重复加载命中 304，索引刷新（mtime 变化）后自动拉新。
-    const response = await fetch('/stocks.index.json');
+    // 保留上游加入的超时中止（AbortController）。
+    const response = await fetch('/stocks.index.json', { signal: abortController.signal });
 
     if (!response.ok) {
       throw new Error(`Failed to load index: ${response.status} ${response.statusText}`);
@@ -40,11 +48,10 @@ export async function loadStockIndex(): Promise<IndexLoadResult> {
       ? unpackTuples(data as StockIndexTuple[])
       : data as StockIndexItem[];
 
-    // The shared payload may now carry ``assetType=index`` rows, but the
-    // current autocomplete/popular/group consumers must not see them. Filter
-    // index rows out before constructing the successful result so stock/ETF
-    // behaviour is unchanged.
-    const visibleItems = items.filter(item => item.assetType !== 'index');
+    // Registered index rows flow to autocomplete/search/group consumers. The
+    // per-consumer gates (popular keeps stock-only) are enforced by each
+    // consumer, not by a global filter here.
+    const visibleItems = items;
 
     return {
       data: visibleItems,
@@ -59,6 +66,8 @@ export async function loadStockIndex(): Promise<IndexLoadResult> {
       error: error as Error,
       fallback: true,  // Load failed, fallback to old mode
     };
+  } finally {
+    globalThis.clearTimeout(timeoutId);
   }
 }
 
