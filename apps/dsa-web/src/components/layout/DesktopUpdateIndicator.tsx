@@ -60,9 +60,7 @@ export const DesktopUpdateIndicator: React.FC = () => {
     return null;
   }
 
-  const tooltip = notice?.message
-    || notice?.title
-    || t('layout.desktopUpdateIdleHint', { version: currentVersion || t('settings.desktopLatest') });
+  // 提示文案在下拉面板内可见展示（notice.message/title），不再使用原生 title
   const canOpenRelease = Boolean(state?.releaseUrl) && (status === 'update-available' || status === 'error');
   const canInstall = status === 'update-downloaded';
   const showRecheck = !busy || status === 'error';
@@ -78,7 +76,6 @@ export const DesktopUpdateIndicator: React.FC = () => {
         aria-label={t('layout.desktopUpdateEntry')}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title={tooltip}
         onClick={() => setOpen((current) => !current)}
       >
         {busy ? (
