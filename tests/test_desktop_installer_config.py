@@ -38,7 +38,10 @@ def test_old_uninstaller_retry_quotes_install_location_parameter() -> None:
 
 
 def test_windows_auto_updater_reuses_current_install_directory() -> None:
-    main_js = (DESKTOP_DIR / "main.js").read_text(encoding="utf-8")
+    from tests.logical_source import read_logical_source
+
+    # main.js 拆分后更新器常量与编排仍在主文件；读取需覆盖 lib/ 拆分件
+    main_js = read_logical_source("apps/dsa-desktop/main.js")
 
     assert "const installDirectory = path.dirname(app.getPath('exe'));" in main_js
     assert "updater.installDirectory = installDirectory;" in main_js

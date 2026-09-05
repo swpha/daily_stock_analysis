@@ -430,23 +430,9 @@ class PipelineCountSemanticsTestCase(unittest.TestCase):
     """
 
     def _read_pipeline_source(self):
-        """读取 pipeline 编排源码。
+        from tests.logical_source import read_logical_source
 
-        Agent 分支已拆分至 src/core/agent_flow.py，源码断言需同时覆盖
-        编排器与拆分后的实现文件，避免"文件搬家导致断言失效"的假阴性。
-        """
-        from pathlib import Path
-
-        root = Path(__file__).resolve().parents[1]
-        pipeline_src = (root / "src" / "core" / "pipeline.py").read_text(
-            encoding="utf-8"
-        )
-        agent_flow_src = (root / "src" / "core" / "agent_flow.py").read_text(
-            encoding="utf-8"
-        )
-        # 中间插入足够长的分隔，避免跨文件的近邻窗口（±1200 字符）互相污染
-        separator = "\n" * 2000
-        return pipeline_src + separator + agent_flow_src
+        return read_logical_source("src/core/pipeline.py")
 
     def test_count_set_to_zero_once_search_is_attempted(self):
         """检索一旦发起就置 0，不能等到拿到结果对象才赋值。"""
@@ -773,15 +759,10 @@ class NewsEvidenceSourcesTestCase(unittest.TestCase):
         源码断言：谁把整段 news_context 交回判定函数，本用例就会失败——那正是
         零命中占位文本冒充证据的入口。
         """
-        from pathlib import Path
+        from tests.logical_source import read_logical_source
 
-        # Agent 分支已拆分至 src/core/agent_flow.py，源码断言需覆盖两个文件
-        root = Path(__file__).resolve().parents[1]
-        src = (
-            (root / "src" / "core" / "pipeline.py").read_text(encoding="utf-8")
-            + ("\n" * 2000)
-            + (root / "src" / "core" / "agent_flow.py").read_text(encoding="utf-8")
-        )
+        # Agent 分支已拆分至 src/core/agent_flow.py，需覆盖两个文件
+        src = read_logical_source("src/core/pipeline.py")
         code_only = "\n".join(
             line for line in src.splitlines() if not line.strip().startswith("#")
         )

@@ -108,3 +108,13 @@ def test_dynamically_read_keys_are_actually_registered(key: str) -> None:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_logical_source_mapping_files_all_exist() -> None:
+    """源码断言共享读取器的映射必须指向真实文件——防止映射本身腐化。"""
+    from tests.logical_source import LOGICAL_MODULE_FILES, read_logical_source
+
+    for logical_path, members in LOGICAL_MODULE_FILES.items():
+        for rel in members:
+            assert (ROOT_DIR / rel).is_file(), f"{logical_path} 映射成员缺失: {rel}"
+        assert read_logical_source(logical_path).strip()

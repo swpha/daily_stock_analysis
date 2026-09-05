@@ -1,48 +1,27 @@
 import apiClient from './index';
 import { toCamelCase } from './utils';
+import type { components } from '../types/api-generated';
+import type { Camelize } from '../types/apiCamel';
+
+/**
+ * 类型权威来源：openapi-typescript 生成（后端 usage schema）。
+ * 响应经 toCamelCase 转换，UI 形状 = Camelize<线格式>。
+ */
+type Wire = components['schemas'];
 
 export type UsagePeriod = 'today' | 'month' | 'all';
 
-export type UsageCallTypeBreakdown = {
-  callType: string;
-  calls: number;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-};
+export type UsageCallTypeBreakdown = Camelize<Wire['CallTypeBreakdown']>;
 
-export type UsageModelBreakdown = {
-  model: string;
-  calls: number;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  maxTotalTokens: number;
-};
+export type UsageModelBreakdown = Camelize<Wire['ModelBreakdown']>;
 
-export type UsageCallRecord = {
-  id: number;
-  calledAt: string;
-  callType: string;
-  model: string;
-  stockCode?: string | null;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-};
+export type UsageCallRecord = Camelize<Wire['UsageCallRecord']>;
 
-export type UsageDashboard = {
-  period: UsagePeriod;
-  fromDate: string;
-  toDate: string;
-  totalCalls: number;
-  totalPromptTokens: number;
-  totalCompletionTokens: number;
-  totalTokens: number;
-  byCallType: UsageCallTypeBreakdown[];
-  byModel: UsageModelBreakdown[];
-  recentCalls: UsageCallRecord[];
-};
+// period 在后端是自由 string，运行时保证是三种取值之一，保持窄类型
+export type UsageDashboard = Omit<
+  Camelize<Wire['UsageDashboardResponse']>,
+  'period'
+> & { period: UsagePeriod };
 
 export const usageApi = {
   getDashboard: async (params: { period?: UsagePeriod; limit?: number } = {}): Promise<UsageDashboard> => {
