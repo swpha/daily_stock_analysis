@@ -42,6 +42,7 @@ from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATE_PATH = PROJECT_ROOT / ".github" / "state" / "kdj_alert_state.json"
+TRIGGERED_CODES_PATH = PROJECT_ROOT / "kdj_triggered_codes.txt"
 TZ_BJS = ZoneInfo("Asia/Shanghai")
 
 FREQ_LABELS = {"d": "日K", "w": "周K"}
@@ -440,6 +441,14 @@ def main() -> int:
 
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # 触发式日报接力：kdj-alert.yml 读取本文件，非空时自动派发
+    # 00-daily-analysis 对这些标的生成当日 AI 日报。测试模式（force）不写，
+    # 避免测试触发真实的 LLM 分析消耗 token。每次运行都重写，防止残留旧值。
+    triggered = (",".join(dict.fromkeys(s["code"] for s in signals))
+                 if signals and not force else "")
+    TRIGGERED_CODES_PATH.write_text(triggered, encoding="utf-8")
+    log(f"触发标的文件: {TRIGGERED_CODES_PATH.name} = '{triggered or '(空)'}'")
     log(f"状态已写入 {STATE_PATH.relative_to(PROJECT_ROOT)}")
     return 0
 

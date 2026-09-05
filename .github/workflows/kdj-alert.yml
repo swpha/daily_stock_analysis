@@ -20,7 +20,8 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: write    # 提交预警状态文件（去重依据）
+  actions: write     # 有信号时派发 00-daily-analysis 生成当日定向日报
 
 jobs:
   alert:
@@ -57,6 +58,24 @@ jobs:
           SERVERCHAN3_SENDKEY: ${{ secrets.SERVERCHAN3_SENDKEY }}
           WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
         run: python scripts/kdj_alert.py
+
+      - name: 触发当日标的日报（有信号时）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          CODES=$(tr -d '[:space:]' < kdj_triggered_codes.txt 2>/dev/null || true)
+          if [ -z "$CODES" ]; then
+            echo "无触发信号，不生成当日日报"
+            exit 0
+          fi
+          echo "KDJ 触发标的: $CODES，派发当日定向日报..."
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/actions/workflows/00-daily-analysis.yml/dispatches" \
+            -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"stocks-only\",\"stock_codes\":\"$CODES\",\"force_run\":\"true\"}}"
+          echo "✅ 已派发 00-daily-analysis（stocks-only，标的: $CODES）"
 
       - name: 提交预警状态（去重依据）
         run: |
