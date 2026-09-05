@@ -106,3 +106,37 @@ class StockHistoryResponse(BaseModel):
             "data": []
         }
     })
+
+
+class StockSearchItem(BaseModel):
+    """股票搜索单条结果
+
+    字段与前端 StockIndexItem 对齐（snake_case，前端经 camelcase 转换后
+    可直接当 StockIndexItem 使用），并附带匹配元数据。
+    """
+
+    canonical_code: str = Field(..., description="规范代码，如 600519.SH")
+    display_code: str = Field(..., description="展示代码，如 600519")
+    name_zh: str = Field("", description="中文名称")
+    pinyin_full: Optional[str] = Field(None, description="全拼")
+    pinyin_abbr: Optional[str] = Field(None, description="拼音缩写")
+    aliases: List[str] = Field(default_factory=list, description="别名列表")
+    market: Optional[str] = Field(None, description="市场，如 CN/HK")
+    asset_type: Optional[str] = Field(None, description="资产类型：stock/etf")
+    active: bool = Field(True, description="是否在市")
+    popularity: int = Field(0, description="热度（用于排序）")
+    match_type: str = Field(..., description="匹配类型：exact/prefix/contains/popular")
+    match_field: str = Field(..., description="命中字段：code/name/pinyin/alias/none")
+    score: int = Field(..., description="匹配得分（热门模式为 0）")
+
+
+class StockSearchResponse(BaseModel):
+    """股票搜索响应
+
+    q 为空时返回按 popularity 排序的热门列表（match_type=popular），
+    可兼作前端的热门股票数据源。
+    """
+
+    query: str = Field("", description="归一化前的原始查询词")
+    total: int = Field(0, description="返回条数")
+    items: List[StockSearchItem] = Field(default_factory=list, description="搜索结果")

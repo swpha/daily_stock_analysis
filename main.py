@@ -82,6 +82,8 @@ logger = logging.getLogger(__name__)
 _RUNTIME_ENV_FILE_KEYS = set()
 _PUBLIC_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]", "*"})
 _LAST_ANALYSIS_FAILURE_REASON: Optional[str] = None
+# 正在运行的 API 服务句柄（uvicorn.Server 与其承载线程），供优雅停机使用
+_API_SERVER_STATE: dict = {}
 
 
 def _get_active_env_path() -> Path:
@@ -1248,6 +1250,7 @@ def start_api_server(host: str, port: int, config: Config) -> None:
 
     thread = threading.Thread(target=run_server, daemon=True)
     thread.start()
+    _API_SERVER_STATE["instance"] = {"server": uvicorn_server, "thread": thread}
 
     timeout_seconds = 3.0
     wait_deadline = time.time() + timeout_seconds
@@ -1272,6 +1275,54 @@ def start_api_server(host: str, port: int, config: Config) -> None:
         raise RuntimeError(f"FastAPI 服务器启动后立即退出: {host}:{port}")
 
     raise RuntimeError(f"FastAPI 服务在 {timeout_seconds:.1f}s 内未完成启动: {host}:{port}")
+
+
+def _install_sigterm_graceful_shutdown() -> None:
+    """在主线程安装 SIGTERM 处理，请求 uvicorn 优雅停机。
+
+    uvicorn 运行在非主线程、无法自行安装信号处理器；缺省时 SIGTERM
+    （Docker stop / systemd stop）表现为硬杀，在途请求与 lifespan
+    shutdown 钩子都不会执行。仅在主线程可安装时生效。
+    """
+    import signal
+
+    state = _API_SERVER_STATE.get("instance") or {}
+    server = state.get("server")
+    if server is None:
+        return
+
+    def _handle_sigterm(signum, frame):  # noqa: ARG001 - signal 回调签名
+        logger.info("收到 SIGTERM，开始优雅停机...")
+        try:
+            server.should_exit = True
+        except Exception as exc:  # noqa: BLE001 - 信号回调内不得抛出
+            logger.warning("优雅停机请求失败: %s", exc)
+
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except (ValueError, OSError) as exc:
+        # ValueError: 非主线程调用；OSError: 平台不支持
+        logger.debug("SIGTERM 优雅停机不可用: %s", exc)
+
+
+def wait_for_api_server_exit() -> int:
+    """阻塞直到 API 服务线程退出或用户 Ctrl+C，返回进程退出码。
+
+    与原先散落在各模式的 `while True: time.sleep(1)` 保活循环等价，
+    额外兜底：服务线程意外退出时主进程随之结束，不再空转挂住。
+    """
+    _install_sigterm_graceful_shutdown()
+    state = _API_SERVER_STATE.get("instance") or {}
+    thread = state.get("thread")
+    try:
+        while True:
+            if thread is not None and not thread.is_alive():
+                logger.info("API 服务线程已退出")
+                return 0
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("\n用户中断，程序退出")
+        return 0
 
 
 def _is_truthy_env(var_name: str, default: str = "true") -> bool:
@@ -1550,12 +1601,7 @@ def main() -> int:
         logger.info("通过 /api/v1/analysis/analyze 接口触发分析")
         logger.info(f"API 文档: http://{args.host}:{args.port}/docs")
         logger.info("按 Ctrl+C 退出...")
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("\n用户中断，程序退出")
-        return 0
+        return wait_for_api_server_exit()
 
     try:
         # 模式0: 回测
@@ -1617,12 +1663,7 @@ def main() -> int:
                 logger.info(f"Web 服务运行中: http://{args.host}:{args.port}")
                 logger.info("Web/API runtime scheduler 已接管定时任务，保存设置会作用于当前进程")
                 logger.info("按 Ctrl+C 退出...")
-                try:
-                    while True:
-                        time.sleep(1)
-                except KeyboardInterrupt:
-                    logger.info("\n用户中断，程序退出")
-                return 0
+                return wait_for_api_server_exit()
 
             logger.info("模式: 定时任务")
             logger.info(f"每日执行时间: {config.schedule_time}")
@@ -1713,11 +1754,7 @@ def main() -> int:
         keep_running = start_serve and not (args.schedule or config.schedule_enabled)
         if keep_running:
             logger.info("API 服务运行中 (按 Ctrl+C 退出)...")
-            try:
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                pass
+            return wait_for_api_server_exit()
 
         return 0
 

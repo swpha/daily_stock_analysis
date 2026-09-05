@@ -16,6 +16,7 @@ FastAPI 应用工厂模块
 """
 
 import asyncio
+import gzip
 import json
 import logging
 import mimetypes
@@ -189,10 +190,24 @@ _STOCK_INDEX_FILENAME = "stocks.index.json"
 _STOCK_INDEX_HEADERS = {
     "Cache-Control": "no-cache",
 }
+# (path, mtime, size) -> (plain_bytes, gzipped_bytes or None)，
+# 避免每次请求重复读取/压缩 3MB+ 的索引文件；索引刷新会改变 mtime 使缓存失效。
+_STOCK_INDEX_PAYLOAD_CACHE: dict = {}
 
 
 def _bundled_stock_index_path() -> Path:
     return Path(__file__).parent.parent / "apps" / "dsa-web" / "public" / _STOCK_INDEX_FILENAME
+
+
+def _load_stock_index_payload_cached(index_path: Path) -> tuple[Path, float, int, bytes]:
+    stat = index_path.stat()
+    signature = (index_path, stat.st_mtime, stat.st_size)
+    cached = _STOCK_INDEX_PAYLOAD_CACHE.get("payload")
+    if cached is not None and cached[0] == signature:
+        return (index_path, stat.st_mtime, stat.st_size, cached[1])
+    payload = index_path.read_bytes()
+    _STOCK_INDEX_PAYLOAD_CACHE["payload"] = (signature, payload)
+    return (index_path, stat.st_mtime, stat.st_size, payload)
 
 
 async def _refresh_stock_index_cache_in_background(reason: str) -> None:
@@ -478,8 +493,8 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         methods=["GET", "HEAD"],
         include_in_schema=False,
     )
-    async def serve_stock_index():
-        """Serve the freshest available stock autocomplete index."""
+    async def serve_stock_index(request: Request):
+        """Serve the freshest available stock autocomplete index (ETag + gzip)."""
         _schedule_stock_index_background_refresh(app, "serve-stock-index")
 
         index_path = _find_existing_stock_index_path()
@@ -489,10 +504,39 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
                 status_code=404,
                 media_type="text/plain",
             )
-        return FileResponse(
-            index_path,
+
+        try:
+            payload = await run_in_threadpool(_load_stock_index_payload_cached, index_path)
+        except OSError as exc:
+            logger.warning("[stock-index] 读取索引失败 %s: %s", index_path, exc)
+            return Response(
+                content="stock index not found",
+                status_code=404,
+                media_type="text/plain",
+            )
+        load_path, mtime, size, payload_bytes = payload
+
+        etag = f'"{int(mtime * 1000):x}-{int(size):x}"'
+        base_headers = {**_STOCK_INDEX_HEADERS, "ETag": etag}
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=base_headers)
+
+        headers = dict(base_headers)
+        content = payload_bytes
+        accepts_gzip = "gzip" in (request.headers.get("accept-encoding") or "").lower()
+        if accepts_gzip:
+            cache_key = (load_path, mtime, size)
+            cached_gzip = _STOCK_INDEX_PAYLOAD_CACHE.get("gzip")
+            if cached_gzip is not None and cached_gzip[0] == cache_key:
+                content = cached_gzip[1]
+            else:
+                content = await run_in_threadpool(gzip.compress, payload_bytes)
+                _STOCK_INDEX_PAYLOAD_CACHE["gzip"] = (cache_key, content)
+            headers["Content-Encoding"] = "gzip"
+        return Response(
+            content=content,
             media_type="application/json",
-            headers=_STOCK_INDEX_HEADERS,
+            headers=headers,
         )
     
     # ============================================================

@@ -49,8 +49,27 @@ _STOCK_INDEX_CACHE: Dict[str, str] | None = None
 _STOCK_CODE_LOOKUP_CACHE: Dict[str, str] | None = None
 _STOCK_CODE_CANDIDATES_CACHE: Dict[str, tuple[str, ...]] | None = None
 _ACTIVE_INDEX_ROWS_CACHE: list | None = None
+_SEARCH_ROWS_CACHE: list | None = None
 _REMOTE_INDEX_VALIDITY_CACHE: tuple[Path, float, int, bool] | None = None
 _STOCK_INDEX_CACHE_LOCK = RLock()
+
+# 匹配分值与 apps/dsa-web/src/utils/searchStocks.ts 保持一致，
+# 保证远程搜索与本地全量索引搜索的排序行为相同。
+_SEARCH_MATCH_SCORES = {
+    "exact_canonical": 100,
+    "exact_display": 99,
+    "exact_name": 98,
+    "exact_alias": 97,
+    "exact_pinyin_abbr": 96,
+    "prefix_display": 80,
+    "prefix_name": 79,
+    "prefix_pinyin_abbr": 78,
+    "prefix_alias": 77,
+    "contains_display": 60,
+    "contains_name": 59,
+    "contains_pinyin_full": 58,
+    "contains_alias": 57,
+}
 
 
 def get_stock_index_candidate_paths() -> tuple[Path, ...]:
@@ -651,16 +670,219 @@ def _validate_index_rows_semantics(rows: list, non_index_rows: list | None = Non
             resolver_map[norm_key] = canonical
 
 
+def _normalize_search_text(value: object) -> str:
+    """Match the frontend ``normalizeQuery``: NFKC + trim + lowercase + strip all whitespace."""
+    return re.sub(
+        r"\s+",
+        "",
+        unicodedata.normalize("NFKC", str(value or "")).strip().lower(),
+    )
+
+
+def _row_popularity(row: list) -> int:
+    popularity = row[9]
+    if isinstance(popularity, bool) or not isinstance(popularity, int):
+        return 0
+    return popularity
+
+
+def _get_search_rows() -> list:
+    """Load and cache the non-index rows of the best stock index candidate.
+
+    Returns raw compressed tuples (10 fields, see the frontend
+    ``INDEX_FIELD`` contract) so scoring stays decoupled from parsing.
+    """
+    global _SEARCH_ROWS_CACHE
+
+    if _SEARCH_ROWS_CACHE is not None:
+        return _SEARCH_ROWS_CACHE
+
+    with _STOCK_INDEX_CACHE_LOCK:
+        if _SEARCH_ROWS_CACHE is not None:
+            return _SEARCH_ROWS_CACHE
+
+        remote_path = get_remote_stock_index_cache_path()
+        for index_path in _get_fresh_stock_index_candidates(
+            get_stock_index_candidate_paths(),
+            remote_path,
+        ):
+            try:
+                raw_items = _load_stock_index_payload(index_path)
+                if _same_path(index_path, remote_path):
+                    validate_stock_index_payload(raw_items)
+                else:
+                    validate_stock_index_payload(raw_items, min_items=0)
+                rows = [
+                    item
+                    for item in raw_items
+                    if isinstance(item, list)
+                    and len(item) >= 10
+                    and str(item[7] or "").strip() != "index"
+                ]
+                _SEARCH_ROWS_CACHE = rows
+                return _SEARCH_ROWS_CACHE
+            except (OSError, TypeError, ValueError) as exc:
+                logger.debug("[股票索引] 读取搜索行失败 %s: %s", index_path, exc)
+
+        _SEARCH_ROWS_CACHE = []
+        return _SEARCH_ROWS_CACHE
+
+
+def _score_search_row(query: str, row: list) -> int:
+    """Score one index row against a normalized query (frontend-parity rules)."""
+    scores = _SEARCH_MATCH_SCORES
+    canonical = _normalize_search_text(row[0])
+    display = _normalize_search_text(row[1])
+    name = _normalize_search_text(row[2])
+    pinyin_full = _normalize_search_text(row[3])
+    pinyin_abbr = _normalize_search_text(row[4])
+    aliases = (
+        [_normalize_search_text(alias) for alias in row[5]]
+        if isinstance(row[5], list)
+        else []
+    )
+
+    if query == canonical:
+        return scores["exact_canonical"]
+    if query == display:
+        return scores["exact_display"]
+    if query == name:
+        return scores["exact_name"]
+    if any(alias == query for alias in aliases):
+        return scores["exact_alias"]
+    if query == pinyin_abbr:
+        return scores["exact_pinyin_abbr"]
+
+    score = 0
+    if display.startswith(query):
+        score = max(score, scores["prefix_display"])
+    if name.startswith(query):
+        score = max(score, scores["prefix_name"])
+    if pinyin_abbr.startswith(query):
+        score = max(score, scores["prefix_pinyin_abbr"])
+    if any(alias.startswith(query) for alias in aliases):
+        score = max(score, scores["prefix_alias"])
+
+    if query in display:
+        score = max(score, scores["contains_display"])
+    if query in name:
+        score = max(score, scores["contains_name"])
+    if query in pinyin_full:
+        score = max(score, scores["contains_pinyin_full"])
+    if any(query in alias for alias in aliases):
+        score = max(score, scores["contains_alias"])
+    return score
+
+
+def _match_type_for_score(score: int) -> str:
+    if score >= 96:
+        return "exact"
+    if score >= 77:
+        return "prefix"
+    if score >= 57:
+        return "contains"
+    return "fuzzy"
+
+
+def _match_field_for_query(query: str, row: list) -> str:
+    canonical = _normalize_search_text(row[0])
+    display = _normalize_search_text(row[1])
+    name = _normalize_search_text(row[2])
+    pinyin_full = _normalize_search_text(row[3])
+    pinyin_abbr = _normalize_search_text(row[4])
+    aliases = (
+        [_normalize_search_text(alias) for alias in row[5]]
+        if isinstance(row[5], list)
+        else []
+    )
+    if query in canonical or query in display:
+        return "code"
+    if query in name:
+        return "name"
+    if query in pinyin_full or query in pinyin_abbr:
+        return "pinyin"
+    if any(query in alias for alias in aliases):
+        return "alias"
+    return "name"
+
+
+def _row_to_search_item(row: list, match_type: str, match_field: str, score: int) -> dict:
+    aliases = [str(alias) for alias in row[5]] if isinstance(row[5], list) else []
+    return {
+        "canonical_code": str(row[0] or ""),
+        "display_code": str(row[1] or ""),
+        "name_zh": str(row[2] or ""),
+        "pinyin_full": str(row[3]) if len(row) > 3 and row[3] is not None else None,
+        "pinyin_abbr": str(row[4]) if len(row) > 4 and row[4] is not None else None,
+        "aliases": aliases,
+        "market": str(row[6] or "") if len(row) > 6 else None,
+        "asset_type": str(row[7] or "") if len(row) > 7 else None,
+        "active": row[8] is True if len(row) > 8 else False,
+        "popularity": _row_popularity(row),
+        "match_type": match_type,
+        "match_field": match_field,
+        "score": score,
+    }
+
+
+def search_stock_index(
+    query: str,
+    limit: int = 10,
+    active_only: bool = True,
+) -> list[dict]:
+    """Search the generated stock index (prefix/contains/pinyin/alias aware).
+
+    Mirrors ``apps/dsa-web/src/utils/searchStocks.ts`` scoring so remote
+    suggestions rank identically to the local full-index search. An empty
+    query returns the popularity top list (used as the "popular stocks"
+    source by the frontend).
+    """
+    try:
+        limit = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        limit = 10
+
+    rows = _get_search_rows()
+    normalized_query = _normalize_search_text(query)
+    if not normalized_query:
+        popular = [row for row in rows if row[8] is True] if active_only else list(rows)
+        popular.sort(key=_row_popularity, reverse=True)
+        return [
+            _row_to_search_item(row, "popular", "none", 0)
+            for row in popular[:limit]
+        ]
+
+    matched: list[tuple[int, list]] = []
+    for row in rows:
+        if active_only and row[8] is not True:
+            continue
+        score = _score_search_row(normalized_query, row)
+        if score > 0:
+            matched.append((score, row))
+
+    matched.sort(key=lambda pair: (-pair[0], -_row_popularity(pair[1])))
+    return [
+        _row_to_search_item(
+            row,
+            _match_type_for_score(score),
+            _match_field_for_query(normalized_query, row),
+            score,
+        )
+        for score, row in matched[:limit]
+    ]
+
+
 def clear_stock_index_cache() -> None:
     """Clear the in-process stock index lookup cache."""
     global _REMOTE_INDEX_VALIDITY_CACHE
     global _STOCK_CODE_CANDIDATES_CACHE, _STOCK_CODE_LOOKUP_CACHE, _STOCK_INDEX_CACHE
-    global _ACTIVE_INDEX_ROWS_CACHE
+    global _ACTIVE_INDEX_ROWS_CACHE, _SEARCH_ROWS_CACHE
     with _STOCK_INDEX_CACHE_LOCK:
         _STOCK_INDEX_CACHE = None
         _STOCK_CODE_LOOKUP_CACHE = None
         _STOCK_CODE_CANDIDATES_CACHE = None
         _ACTIVE_INDEX_ROWS_CACHE = None
+        _SEARCH_ROWS_CACHE = None
         _REMOTE_INDEX_VALIDITY_CACHE = None
 
 

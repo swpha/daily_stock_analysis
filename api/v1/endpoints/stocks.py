@@ -16,6 +16,7 @@ from typing import Optional
 import re
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, Depends
+from starlette.concurrency import run_in_threadpool
 
 from api.deps import get_system_config_service
 
@@ -25,6 +26,8 @@ from api.v1.schemas.stocks import (
     KLineData,
     StockHistoryResponse,
     StockQuote,
+    StockSearchItem,
+    StockSearchResponse,
 )
 from api.v1.schemas.history import WatchlistRequest, WatchlistResponse
 from api.v1.schemas.common import ErrorResponse
@@ -41,6 +44,7 @@ from src.services.import_parser import (
 from src.services.stock_service import StockService
 from src.services.stock_list_parser import split_stock_list
 from src.services.system_config_service import SystemConfigService
+from src.data.stock_index_loader import search_stock_index
 from data_provider.base import normalize_stock_code
 
 logger = logging.getLogger(__name__)
@@ -232,7 +236,7 @@ async def parse_import(request: Request) -> ExtractFromImageResponse:
                 detail={"error": "bad_request", "message": "未提供 text，请使用 {\"text\": \"...\"}"},
             )
         try:
-            items = parse_import_from_text(text)
+            items = await run_in_threadpool(parse_import_from_text, text)
         except ValueError as e:
             text_bytes = len(text.encode("utf-8"))
             logger.warning(
@@ -285,7 +289,7 @@ async def parse_import(request: Request) -> ExtractFromImageResponse:
             )
         filename = getattr(file, "filename", None) or ""
         try:
-            items = parse_import_from_bytes(data, filename=filename)
+            items = await run_in_threadpool(parse_import_from_bytes, data, filename=filename)
         except ValueError as e:
             ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
             logger.warning(
@@ -311,6 +315,39 @@ async def parse_import(request: Request) -> ExtractFromImageResponse:
     ]
     codes = list(dict.fromkeys(i.code for i in extract_items if i.code))
     return ExtractFromImageResponse(codes=codes, items=extract_items, raw_text=None)
+
+
+@router.get(
+    "/search",
+    response_model=StockSearchResponse,
+    responses={
+        200: {"description": "搜索结果"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="股票联想搜索",
+    description=(
+        "按代码前缀/中文名/全拼/拼音缩写/别名联想搜索股票（与前端本地搜索同分值排序）。"
+        "q 为空时返回按热度排序的热门列表，可兼作热门股票数据源。"
+    ),
+)
+def search_stocks(
+    q: str = Query("", max_length=100, description="搜索词：代码前缀/名称/拼音，空则返回热门列表"),
+    limit: int = Query(10, ge=1, le=50, description="返回条数上限"),
+    active_only: bool = Query(True, description="仅返回在市标的"),
+) -> StockSearchResponse:
+    try:
+        items = search_stock_index(q, limit=limit, active_only=active_only)
+        return StockSearchResponse(
+            query=q,
+            total=len(items),
+            items=[StockSearchItem(**item) for item in items],
+        )
+    except Exception as e:
+        logger.error(f"股票搜索失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "股票搜索失败"},
+        )
 
 
 @router.get(
