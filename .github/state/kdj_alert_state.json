@@ -9,16 +9,28 @@
       "last_j": -6.47
     },
     "513180:w": {
-      "last_notified": "2026-09-10",
-      "last_j": 2.5
+      "last_notified": "2026-09-11",
+      "last_j": 8.55
     },
     "512000:d": {
-      "last_notified": "2026-09-09",
-      "last_j": 4.3
+      "last_notified": "2026-09-11",
+      "last_j": -3.96
     },
     "513180:d": {
       "last_notified": "2026-09-09",
       "last_j": 8.08
+    },
+    "512000:w": {
+      "last_notified": "2026-09-11",
+      "last_j": 6.73
+    },
+    "000776:d": {
+      "last_notified": "2026-09-11",
+      "last_j": 4.91
+    },
+    "601888:d": {
+      "last_notified": "2026-09-11",
+      "last_j": 2.24
     }
   }
 }
