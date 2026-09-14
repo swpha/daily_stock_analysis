@@ -5,32 +5,48 @@
       "last_j": -9.39
     },
     "600570:d": {
-      "last_notified": "2026-09-10",
-      "last_j": -6.47
+      "last_notified": "2026-09-15",
+      "last_j": -12.72
     },
     "513180:w": {
-      "last_notified": "2026-09-11",
-      "last_j": 8.55
+      "last_notified": "2026-09-15",
+      "last_j": -2.66
     },
     "512000:d": {
-      "last_notified": "2026-09-11",
-      "last_j": -3.96
+      "last_notified": "2026-09-15",
+      "last_j": -9.31
     },
     "513180:d": {
       "last_notified": "2026-09-09",
       "last_j": 8.08
     },
     "512000:w": {
-      "last_notified": "2026-09-11",
-      "last_j": 6.73
+      "last_notified": "2026-09-15",
+      "last_j": -3.32
     },
     "000776:d": {
-      "last_notified": "2026-09-11",
-      "last_j": 4.91
+      "last_notified": "2026-09-15",
+      "last_j": -11.0
     },
     "601888:d": {
-      "last_notified": "2026-09-11",
-      "last_j": 2.24
+      "last_notified": "2026-09-15",
+      "last_j": -3.77
+    },
+    "601888:w": {
+      "last_notified": "2026-09-15",
+      "last_j": 6.93
+    },
+    "600570:w": {
+      "last_notified": "2026-09-15",
+      "last_j": 7.48
+    },
+    "000400:d": {
+      "last_notified": "2026-09-15",
+      "last_j": 1.39
+    },
+    "000400:w": {
+      "last_notified": "2026-09-15",
+      "last_j": 9.97
     }
   }
 }
