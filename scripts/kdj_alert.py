@@ -9,7 +9,6 @@
     KDJ_ALERT_CONFIG             监控列表，code:threshold[:freqs] 逗号分隔
                                  freqs: d=日K, w=周K, dw=两者；缺省为 w（周K）
                                  如 "159659:10:dw,600519:8"
-    KDJ_ALERT_MIN_INTERVAL_DAYS  同一标的"持续低位"重复提醒的最小间隔天数（默认 2）
     KDJ_ALERT_FORCE              true 时跳过去重与数据时效检查，强制发送（用于测试）
     EMAIL_SENDER / EMAIL_PASSWORD / EMAIL_RECEIVERS / EMAIL_SMTP_HOST
     微信渠道（配置了就会推送，可同时配多个，全部推送）:
@@ -17,8 +16,11 @@
     SERVERCHAN3_SENDKEY    Server酱3 SendKey（https://sct.ftqq.com 微信扫码获取）
     WECHAT_WEBHOOK_URL     企业微信群机器人 Webhook
 
-通知去重:
-    首次跌破阈值 → 立即通知；之后仍在阈值下方 → 每 MIN_INTERVAL_DAYS 天提醒一次。
+通知策略:
+    每个交易日收盘后检查一次：
+    1) 【买入信号】J 首次跌破阈值当天发送详细信号（含最近 6 根 KDJ），同日不重复；
+    2) 【KDJ 每日提醒】汇总当天所有处于超卖区间（J<阈值）的标的，每天一封；
+    3) 首次跌破的标的当日自动派发 AI 定向日报（00-daily-analysis）。
     状态按 "code:freq" 记录在 .github/state/kdj_alert_state.json，由工作流提交回仓库。
 
 数据源:
@@ -323,18 +325,45 @@ def wechat_markdown_status(statuses: list[dict], force: bool) -> str:
     return "\n".join(lines)
 
 
+def digest_email_body(oversold: list[dict]) -> str:
+    """【KDJ 每日提醒】邮件正文：当日所有超卖标的汇总。"""
+    lines = ["KDJ 每日超卖提醒（J < 阈值标的汇总，仅供参考，不构成投资建议）",
+             "=" * 52]
+    for s in oversold:
+        lines.append(f"{s['name']} ({s['code']})")
+        lines.append(f"  {s['freq']}  J={s['j']:.2f} < {s['threshold']:g}（{s['kind']}）  "
+                     f"K线 {s['bar_date']}  收盘 {s['close']:.3f}  K={s['k']:.2f}  D={s['d']:.2f}")
+    lines += ["=" * 52,
+              f"检查时间: {datetime.now(TZ_BJS).strftime('%Y-%m-%d %H:%M')}（北京时间）",
+              "今日新跌破标的已自动生成 AI 定向日报；每周五生成全量 AI 周报。",
+              f"监控配置: KDJ_ALERT_CONFIG = {os.environ.get('KDJ_ALERT_CONFIG', '')}"]
+    return "\n".join(lines)
+
+
+def wechat_markdown_digest(oversold: list[dict]) -> str:
+    """【KDJ 每日提醒】微信 markdown。"""
+    lines = [f"**KDJ 每日提醒**：{len(oversold)} 个标的处于超卖区间（J<10）"]
+    for s in oversold:
+        lines.append("")
+        lines.append(f"**{s['name']}（{s['code']}）{s['freq']}**")
+        lines.append(f"J={s['j']:.2f} < {s['threshold']:g}（{s['kind']}）｜"
+                     f"K线 {s['bar_date']}｜收盘 {s['close']:.3f}")
+    lines += ["",
+              f"检查时间: {datetime.now(TZ_BJS).strftime('%Y-%m-%d %H:%M')}（北京时间）"]
+    return "\n".join(lines)
+
+
 def main() -> int:
     config = parse_config(os.environ.get("KDJ_ALERT_CONFIG", "159659:10:dw"))
-    min_interval = int(os.environ.get("KDJ_ALERT_MIN_INTERVAL_DAYS", "2"))
     force = os.environ.get("KDJ_ALERT_FORCE", "").strip().lower() in ("1", "true", "yes")
     today = datetime.now(TZ_BJS).date()
     state = load_state()
     notified: dict = state.setdefault("notified", {})
 
-    log(f"监控列表: {config} | 间隔: {min_interval}天 | 强制: {force}")
+    log(f"监控列表: {config} | 强制: {force}")
     names = lookup_names(sorted({c for c, _, _ in config}))
 
-    signals, statuses, failures = [], [], []
+    signals, statuses, oversold, failures = [], [], [], []
     for code, threshold, freqs in config:
         label = f"{names.get(code, '?')}({code})"
         try:
@@ -374,22 +403,26 @@ def main() -> int:
                         continue
 
                     fresh = prev_j >= threshold
+                    kind = "今日新跌破" if fresh else "持续低位"
+                    oversold.append({"code": code, "name": names.get(code, code),
+                                     "threshold": threshold, "freq": flabel, "kind": kind,
+                                     "j": cur_j, "bar_date": str(cur["date"])[:10],
+                                     "close": cur["close"], "k": cur["K"], "d": cur["D"]})
+
+                    if not fresh:
+                        log(f"  {label} {flabel}持续低位（J={cur_j:.2f}），列入每日提醒")
+                        continue
                     last = notified.get(state_key, {}).get("last_notified", "")
                     if not force and last == today.isoformat():
                         log(f"  {label} {flabel}今天已通知过，跳过同日重复提醒")
                         continue
-                    days_since = (today - date.fromisoformat(last)).days if last else 9999
-                    if not force and not fresh and days_since < min_interval:
-                        log(f"  {label} {flabel}持续低位，距上次通知仅 {days_since} 天（< {min_interval}），跳过重复提醒")
-                        continue
 
-                    kind = "首次跌破" if fresh else "持续低位"
                     history = "\n".join(
                         f"    {r['date']}  收盘 {r['close']:>8.3f}  K {r['K']:>6.2f}  D {r['D']:>6.2f}  J {r['J']:>7.2f}"
                         for r in bars[-6:])
                     signals.append({
                         "code": code, "name": names.get(code, code), "threshold": threshold,
-                        "freq": flabel, "kind": kind, "bar_date": str(cur["date"])[:10],
+                        "freq": flabel, "kind": "首次跌破", "bar_date": str(cur["date"])[:10],
                         "close": cur["close"], "k": cur["K"], "d": cur["D"], "j": cur_j,
                         "prev_j": prev_j, "history": history,
                     })
@@ -401,7 +434,7 @@ def main() -> int:
             log(f"  {label} 检查失败: {exc}")
             failures.append(f"{code}: {exc}")
 
-    if failures and not signals:
+    if failures and not signals and not oversold:
         log("所有标的检查失败:\n  " + "\n  ".join(failures))
         return 1
 
@@ -453,7 +486,22 @@ def main() -> int:
             log(f"通知发送失败: {exc}")
             return 1
     else:
-        log("无触发信号，不发送通知")
+        log("无首次跌破信号")
+
+    # 每日提醒：汇总当天所有处于超卖区间（J<阈值）的标的，每个交易日一封
+    if not force and oversold:
+        summary = "、".join(f"{s['code']}{s['freq']} J={s['j']:.1f}" for s in oversold[:5])
+        subject = (f"【KDJ 每日提醒】{len(oversold)} 个标的处于超卖区间: {summary}"
+                   + ("…" if len(oversold) > 5 else ""))
+        try:
+            send_email(subject, digest_email_body(oversold))
+            sent_wx = send_wechat(subject, wechat_markdown_digest(oversold))
+            log(f"每日提醒已发送（邮件 + 微信：{'、'.join(sent_wx) if sent_wx else '未配置微信渠道'}）")
+        except Exception as exc:
+            log(f"每日提醒发送失败: {exc}")
+            return 1
+    elif not force:
+        log("今日无标的处于超卖区间，不发送每日提醒")
 
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
